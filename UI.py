@@ -6,6 +6,7 @@ import os
 # ==========================================
 # PAGE CONFIGURATION
 # ==========================================
+# We set the sidebar to expanded so the navigation menu is visible immediately
 st.set_page_config(page_title="IskHED Admin", layout="wide", initial_sidebar_state="expanded")
 
 # ==========================================
@@ -51,7 +52,7 @@ footer {visibility:hidden;}
     --text-dark:#333333;
 }
 
-/* Force Header and Sidebar Backgrounds */
+/* Force Header and Backgrounds */
 header { background-color: var(--pup-maroon) !important; }
 [data-testid="stHeader"]{ background-color: var(--pup-maroon) !important; }
 .stApp{ background-color:#F5F5F5 !important; }
@@ -66,21 +67,23 @@ header { background-color: var(--pup-maroon) !important; }
 [data-testid="stMetricValue"] div { color: var(--text-dark) !important; }
 [data-testid="stMetricLabel"] p { color: #555555 !important; font-weight: 600 !important; }
 
-/* Protect Custom Header and Sidebar text colors */
+/* Protect Custom Header text colors */
 .custom-header h1, .custom-header span { color: white !important; font-size:64px !important; font-weight:900 !important; }
 .custom-header p { color: var(--pup-gold) !important; font-size:20px !important; font-weight:600 !important; }
 [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3, [data-testid="stSidebar"] p, [data-testid="stSidebar"] label, [data-testid="stSidebar"] span { color: white !important; }
 
 /* Form UI styling (Buttons & Uploaders) */
 div[data-testid="stFileUploaderDropzone"]{ background-color:#111827 !important; border:1px solid #444 !important; border-radius:12px !important; }
+div[data-testid="stFileUploaderDropzone"] * { color: white !important; }
 div.stButton > button:first-child{ background-color:var(--pup-gold) !important; border:none !important; border-radius:12px !important; height:50px !important; }
 div.stButton > button:first-child * { color:var(--pup-dark) !important; font-weight:700 !important; font-size:16px !important; }
 div.stButton > button:first-child:hover{ background-color:#FFF2A8 !important; transform:translateY(-1px); }
 
-/* Tabs Styling */
-button[data-baseweb="tab"] * { color:var(--text-dark) !important; font-weight:700 !important; font-size:16px !important; }
-button[data-baseweb="tab"][aria-selected="true"] * { color:var(--pup-maroon) !important; }
-button[data-baseweb="tab"][aria-selected="true"]{ border-bottom:4px solid var(--pup-maroon) !important; }
+/* --- FIX FOR INVISIBLE FILE UPLOAD NAME AND ICON --- */
+[data-testid="stUploadedFile"] * { color: var(--text-dark) !important; font-weight: 600 !important; }
+[data-testid="stUploadedFile"] svg { color: var(--pup-maroon) !important; stroke: var(--pup-maroon) !important; }
+[data-testid="stFileUploaderFile"] * { color: var(--text-dark) !important; font-weight: 600 !important; }
+[data-testid="stFileUploaderFile"] svg { color: var(--pup-maroon) !important; fill: var(--pup-maroon) !important; }
 
 /* Layout Containers */
 .custom-header{ background:linear-gradient(135deg, #880000, #AA0000); border-radius:15px; padding:35px; margin-bottom:25px; box-shadow: 0px 4px 12px rgba(0,0,0,0.15); }
@@ -104,53 +107,79 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# SIDEBAR CONTROLS & SESSION STATE
+# SESSION STATE INITIALIZATION
 # ==========================================
-st.sidebar.title("⚙️ Parameters")
-st.sidebar.write("Upload the latest constraints to generate the schedule.")
-
-uploaded_file = st.sidebar.file_uploader("Upload inputSheet.xlsx", type=["xlsx"])
-run_algorithms = st.sidebar.button("Generate Schedule", use_container_width=True)
-
-# Session state ensures the schedule stays visible even after user interacts with filters
 if 'schedule_generated' not in st.session_state:
     st.session_state.schedule_generated = False
 
+if 'active_tab' not in st.session_state:
+    st.session_state.active_tab = "Master Schedule"
 
 # ==========================================
-# MAIN DASHBOARD TABS
+# SIDEBAR NAVIGATION MENU
 # ==========================================
-tab1, tab2, tab3 = st.tabs(["📊 Master Schedule", "🏢 Room Allocations", "⚠️ Manual Adjustments"])
+st.sidebar.markdown("### 📌 Navigation Menu")
+st.sidebar.divider()
+
+if st.sidebar.button("📊 Master Schedule", use_container_width=True):
+    st.session_state.active_tab = "Master Schedule"
+
+if st.sidebar.button("🏢 Room Allocations", use_container_width=True):
+    st.session_state.active_tab = "Room Allocations"
+    
+if st.sidebar.button("⚠️ Manual Adjustments", use_container_width=True):
+    st.session_state.active_tab = "Manual Adjustments"
+
+# Delete button only shows up if a schedule exists
+if st.session_state.schedule_generated:
+    st.sidebar.markdown("<br><br>", unsafe_allow_html=True) # Spacer
+    if st.sidebar.button("🗑️ Delete Generation", use_container_width=True):
+        st.session_state.schedule_generated = False
+        st.rerun()
+
+# ==========================================
+# TOP SECTION: UPLOAD & GENERATE
+# ==========================================
+st.markdown("### ⚙️ System Parameters")
+st.write("Upload the latest constraints to generate the schedule.")
+
+upload_col, btn_col = st.columns([3, 1])
+
+with upload_col:
+    uploaded_file = st.file_uploader("Upload inputSheet.xlsx", type=["xlsx"], label_visibility="collapsed")
+
+with btn_col:
+    # Add a little spacing so the button aligns nicely with the uploader
+    st.markdown("<div style='margin-top: 2px;'></div>", unsafe_allow_html=True)
+    run_algorithms = st.button("Generate Schedule", use_container_width=True)
+
+# Handle the generation logic immediately after the button
+if run_algorithms:
+    if uploaded_file is not None:
+        with st.spinner('Running the Algorithm... Please wait.'):
+            # Save upload to local directory for backend script
+            with open("inputSheet.xlsx", "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            # Execute backend algorithm
+            subprocess.run(["python", "main.py"]) 
+            st.session_state.schedule_generated = True
+        st.success("✨ Schedule finalized successfully!")
+    else:
+        st.error("Please upload the input constraints file first.")
+        st.session_state.schedule_generated = False
+
+st.divider()
+
+# ==========================================
+# MAIN CONTENT VIEWS
+# ==========================================
 
 # ------------------------------------------
-# TAB 1: MASTER SCHEDULE (Firm Student/Prof Views)
+# VIEW 1: MASTER SCHEDULE
 # ------------------------------------------
-with tab1:
+if st.session_state.active_tab == "Master Schedule":
     st.subheader("Firm Master Schedules")
     
-    # Check if user clicked Generate
-    if run_algorithms:
-        if uploaded_file is not None:
-            status_col1, status_col2 = st.columns([3, 1])
-            with status_col1:
-                with st.spinner('Running the Algorithm... Please wait.'):
-                    # Save upload to local directory for backend script
-                    with open("inputSheet.xlsx", "wb") as f:
-                        f.write(uploaded_file.getbuffer())
-                    # Execute backend algorithm
-                    subprocess.run(["python", "main.py"]) 
-                    st.session_state.schedule_generated = True
-            with status_col2:
-                if st.button("🗑️ Delete Current Generation", use_container_width=True):
-                    st.error("Generation interrupted.")
-                    st.session_state.schedule_generated = False
-                    st.stop()
-            st.success("✨ Schedule finalized successfully!")
-        else:
-            st.error("Please upload the input constraints file first.")
-            st.session_state.schedule_generated = False
-
-    # Display logic (runs if schedule exists in memory)
     if st.session_state.schedule_generated and uploaded_file is not None:
         try:
             # Read output from backend
@@ -243,14 +272,13 @@ with tab1:
         except Exception as e:
             st.warning(f"Could not load master schedule. Error: {e}")
             
-    elif not run_algorithms:
+    else:
         st.info("Upload the input file and click 'Generate Schedule' to view the timetable.")
 
-
 # ------------------------------------------
-# TAB 2: ROOM ALLOCATIONS (Zone Checking)
+# VIEW 2: ROOM ALLOCATIONS
 # ------------------------------------------
-with tab2:
+elif st.session_state.active_tab == "Room Allocations":
     st.subheader("Room Occupancy Matrix")
     
     if st.session_state.schedule_generated and uploaded_file is not None:
@@ -276,6 +304,10 @@ with tab2:
                 
             # --- ROOM VISUAL TIMETABLE ---
             st.markdown("### 🗓️ Visual Room Occupancy")
+            
+            days_of_week = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+            time_bins = list(range(420, 1290, 30))
+            time_labels = [format_minutes(t) for t in time_bins]
             grid_df_rooms = pd.DataFrame("", index=time_labels, columns=days_of_week)
             
             for _, row in df_room_filtered.iterrows():
@@ -300,6 +332,11 @@ with tab2:
                 except:
                     pass
                     
+            def style_timetable(val):
+                if val != "":
+                    return 'background-color: #880000; color: #FFFFFF; font-weight: 700; border: 1px solid #FFD700; text-align: center;'
+                return 'background-color: #FFFFFF; color: #333333; border: 1px solid #E0E0E0;'
+
             try:
                 styled_room_grid = grid_df_rooms.style.map(style_timetable)
             except AttributeError:
@@ -308,6 +345,7 @@ with tab2:
             st.dataframe(styled_room_grid, use_container_width=True, height=500)
             
             # --- ROOM RAW DATA LOG ---
+            st.markdown("### 📋 Room Assignment Details")
             df_room_table = df_room_filtered.copy()
             if 'time_start' in df_room_table.columns: df_room_table['time_start'] = df_room_table['time_start'].apply(format_minutes)
             if 'time_end' in df_room_table.columns: df_room_table['time_end'] = df_room_table['time_end'].apply(format_minutes)
@@ -318,11 +356,10 @@ with tab2:
     else:
         st.info("Generate a schedule to view room allocations.")
 
-
 # ------------------------------------------
-# TAB 3: MANUAL ADJUSTMENTS & OVERRIDES
+# VIEW 3: MANUAL ADJUSTMENTS
 # ------------------------------------------
-with tab3:
+elif st.session_state.active_tab == "Manual Adjustments":
     st.subheader("System Health & Manual Overrides")
     
     if st.session_state.schedule_generated and uploaded_file is not None:
