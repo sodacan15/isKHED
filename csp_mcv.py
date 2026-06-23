@@ -282,7 +282,7 @@ def build_csp(
     for course in courses:
         domain = []
         for prof in professors:
-            if course.course_id not in prof.subjects_handled:
+            if base_course_id(course.course_id) not in prof.subjects_handled:
                 continue
             for day in prof.days_available:
                 if day == "Sunday":
