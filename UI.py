@@ -614,7 +614,7 @@ with tab3:
                     s["block"] = f"Year {s.get('year_level', '?')}"
 
             report = resolve_conflicts(schedule_dicts)
-            total  = report["total"]
+            total  = report.get("total", 0)
 
             def _cid(slot):        return str(slot.get("course_id", "?")).split("__")[0]
             def _sec(slot):        return str(slot.get("block", "?"))
@@ -694,9 +694,24 @@ with tab3:
                 ("sunday_violations",     "📅 Sunday Class",               1),
             ]
 
+            HARD_COLOR_MAP = {
+                "👨‍🏫 Professor Double-Booking": "#3d1a1a",
+                "🏫 Room Double-Booking":        "#1a2d3d",
+                "🔄 Modality Mix":               "#2d2a1a",
+                "🎓 Block Overlap":              "#1a2d1a",
+                "🧪 Lab Not F2F":                "#2d1a2d",
+                "⏰ Outside Allowed Hours":       "#1a1a2d",
+                "📍 Invalid Room":               "#2d2d1a",
+                "📅 Sunday Class":               "#2d1a1a",
+            }
+
+            def _style_hard(row, color_map=HARD_COLOR_MAP):
+                bg = color_map.get(row["Type"], "#1a1a1a")
+                return [f"background-color:{bg};color:#e6edf3"] * len(row)
+
             hard_rows = []
             for key, label, arity in CATEGORIES:
-                for item in report[key]:
+                for item in report.get(key, []):
                     if arity == 2:
                         s1, s2, _ = item
                         hard_rows.append({
@@ -725,21 +740,6 @@ with tab3:
                 st.success("✅ No hard constraint violations — schedule is fully compliant.")
             else:
                 st.error(f"⚠️ {len(hard_rows)} hard violation(s) found.")
-                COLOR_MAP = {
-                    "👨‍🏫 Professor Double-Booking": "#3d1a1a",
-                    "🏫 Room Double-Booking":        "#1a2d3d",
-                    "🔄 Modality Mix":               "#2d2a1a",
-                    "🎓 Block Overlap":              "#1a2d1a",
-                    "🧪 Lab Not F2F":                "#2d1a2d",
-                    "⏰ Outside Allowed Hours":       "#1a1a2d",
-                    "📍 Invalid Room":               "#2d2d1a",
-                    "📅 Sunday Class":               "#2d1a1a",
-                }
-
-                def _style_hard(row):
-                    bg = COLOR_MAP.get(row["Type"], "#1a1a1a")
-                    return [f"background-color:{bg};color:#e6edf3"] * len(row)
-
                 df_hard = pd.DataFrame(hard_rows)[["Type", "Course", "Section", "Day", "Time", "Reason"]]
                 st.dataframe(
                     df_hard.style.apply(_style_hard, axis=1),
