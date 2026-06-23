@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import subprocess
+import sys
 import os
 import re
 
@@ -406,10 +407,18 @@ if run_algorithms:
         with st.spinner("Running the Algorithm... Please wait."):
             with open("inputSheet.xlsx", "wb") as f:
                 f.write(uploaded_file.getbuffer())
-            subprocess.run([sys.executable, "main.py"])
-            st.session_state.schedule_generated = True
-            st.session_state.edit_idx = None
-        st.success("✨ Schedule finalized successfully!")
+            result = subprocess.run(
+                [sys.executable, "main.py"],
+                capture_output=True, text=True
+            )
+            if result.returncode != 0:
+                st.error("⚠️ Schedule generation failed.")
+                with st.expander("Show error details"):
+                    st.code(result.stderr or result.stdout or "No output captured.")
+            else:
+                st.session_state.schedule_generated = True
+                st.session_state.edit_idx = None
+                st.success("✨ Schedule finalized successfully!")
     else:
         st.error("Please upload the input constraints file first.")
         st.session_state.schedule_generated = False
@@ -509,63 +518,223 @@ if st.session_state.active_tab == "Master Schedule":
 # VIEW 2: ROOM ALLOCATIONS
 # ==========================================
 elif st.session_state.active_tab == "Room Allocations":
-    st.subheader("Room Occupancy Matrix")
+    st.subheader("🏢 Room Allocation Center")
 
     master_path = "masterSchedule.xlsx"
-    if st.session_state.schedule_generated and os.path.exists(master_path):
+    if not (st.session_state.schedule_generated and os.path.exists(master_path)):
+        st.info("Generate a schedule to view room allocations.")
+    else:
         try:
             df_raw_rooms = pd.read_excel(master_path, sheet_name="All_Assignments")
             if "room" in df_raw_rooms.columns:
                 df_raw_rooms["room"] = df_raw_rooms["room"].apply(format_room_name)
+            for tcol in ("time_start", "time_end"):
+                if tcol in df_raw_rooms.columns:
+                    df_raw_rooms[tcol] = df_raw_rooms[tcol].apply(parse_time_to_minutes)
 
-            room_cols = [c for c in df_raw_rooms.columns if any(k in c.lower() for k in ("room","location"))]
-            prof_cols = [c for c in df_raw_rooms.columns if any(k in c.lower() for k in ("prof","instructor","faculty"))]
+            room_col_name = next(
+                (c for c in df_raw_rooms.columns if any(k in c.lower() for k in ("room","location"))), None
+            )
+            prof_col_name = next(
+                (c for c in df_raw_rooms.columns if any(k in c.lower() for k in ("prof","instructor","faculty"))), None
+            )
             course_color_map = get_course_color_map(df_raw_rooms)
 
-            if room_cols:
-                room_col_name = room_cols[0]
-                room_list = ["All Rooms"] + sorted(df_raw_rooms[room_col_name].dropna().unique().tolist())
-                selected_room = st.selectbox(f"🏫 Check Occupancy for Room:", room_list)
-                df_room_filtered = (
-                    df_raw_rooms[df_raw_rooms[room_col_name] == selected_room]
-                    if selected_room != "All Rooms"
-                    else df_raw_rooms
+            if room_col_name is None:
+                st.warning("No room column found in schedule.")
+                st.stop()
+
+            all_rooms = sorted(df_raw_rooms[room_col_name].dropna().unique().tolist())
+            total_slots = len(DAYS_OF_WEEK) * len(TIME_BINS)
+
+            # Build per-room stats
+            room_stats = []
+            for rm in all_rooms:
+                r_df = df_raw_rooms[df_raw_rooms[room_col_name] == rm]
+                occupied = 0
+                for _, rrow in r_df.iterrows():
+                    try:
+                        occupied += (int(rrow["time_end"]) - int(rrow["time_start"])) // 30
+                    except Exception:
+                        pass
+                util_pct = min(round(occupied / total_slots * 100, 1), 100)
+                is_lab = rm.startswith("South Wing") or "lab" in rm.lower()
+                room_stats.append({
+                    "room": rm, "sessions": len(r_df),
+                    "occupied_slots": occupied, "utilization": util_pct,
+                    "type": "Lab" if is_lab else "Lecture",
+                })
+            stats_df = pd.DataFrame(room_stats)
+
+            # Detect double-bookings
+            conflicts_list = []
+            for rm in all_rooms:
+                r_df = df_raw_rooms[df_raw_rooms[room_col_name] == rm].reset_index(drop=True)
+                for i in range(len(r_df)):
+                    for j in range(i + 1, len(r_df)):
+                        ri, rj = r_df.iloc[i], r_df.iloc[j]
+                        if ri.get("day") == rj.get("day"):
+                            si, ei = int(ri.get("time_start", 0)), int(ri.get("time_end", 0))
+                            sj, ej = int(rj.get("time_start", 0)), int(rj.get("time_end", 0))
+                            if si < ej and sj < ei:
+                                conflicts_list.append({
+                                    "Room": rm, "Day": ri.get("day", ""),
+                                    "Course A": ri.get("course_id", ""),
+                                    "Course B": rj.get("course_id", ""),
+                                    "Time A": f"{format_minutes(si)}–{format_minutes(ei)}",
+                                    "Time B": f"{format_minutes(sj)}–{format_minutes(ej)}",
+                                })
+
+            # ── Top Metrics ──────────────────────────────────────────────────────
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Rooms in Use", len(all_rooms))
+            m2.metric("Total Sessions", len(df_raw_rooms))
+            avg_util = round(stats_df["utilization"].mean(), 1) if not stats_df.empty else 0
+            m3.metric("Avg Utilization", f"{avg_util}%")
+            m4.metric(
+                "Room Conflicts",
+                len(conflicts_list),
+                delta=f"{len(conflicts_list)} need attention" if conflicts_list else "None detected",
+                delta_color="inverse" if conflicts_list else "normal",
+            )
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # ── Tabs ─────────────────────────────────────────────────────────────
+            tab_overview, tab_detail, tab_conflicts = st.tabs(
+                ["📊 Room Overview", "🔍 Room Detail", "🚨 Conflict Report"]
+            )
+
+            with tab_overview:
+                type_filter = st.radio(
+                    "Filter by Type:", ["All", "Lab Rooms", "Lecture Rooms"],
+                    horizontal=True, key="room_type_filter"
                 )
-            else:
-                df_room_filtered = df_raw_rooms
-                selected_room = "All Rooms"
+                filtered_stats = stats_df.copy()
+                if type_filter == "Lab Rooms":
+                    filtered_stats = stats_df[stats_df["type"] == "Lab"]
+                elif type_filter == "Lecture Rooms":
+                    filtered_stats = stats_df[stats_df["type"] == "Lecture"]
 
-            st.markdown("### 🗓️ Visual Room Occupancy")
+                if filtered_stats.empty:
+                    st.info("No rooms of this type found.")
+                else:
+                    st.caption(
+                        "🟢 Under 50%  ·  🟡 50–80%  ·  🔴 Above 80% utilization"
+                    )
+                    cols_per_row = 4
+                    rows_batched = [
+                        filtered_stats.iloc[i:i + cols_per_row]
+                        for i in range(0, len(filtered_stats), cols_per_row)
+                    ]
+                    for row_batch in rows_batched:
+                        col_widgets = st.columns(cols_per_row)
+                        for col_w, (_, rstat) in zip(col_widgets, row_batch.iterrows()):
+                            util = rstat["utilization"]
+                            bar_color = (
+                                "#D32F2F" if util >= 80 else
+                                "#F9A825" if util >= 50 else
+                                "#2E7D32"
+                            )
+                            badge_color = "#1565C0" if rstat["type"] == "Lab" else "#6A1B9A"
+                            col_w.markdown(
+                                f"""<div style="background:#fff;border:1.5px solid #e0e0e0;
+                                            border-radius:12px;padding:14px 16px;margin-bottom:10px;
+                                            box-shadow:0 2px 6px rgba(0,0,0,0.06);">
+                                  <div style="display:flex;justify-content:space-between;
+                                              align-items:flex-start;margin-bottom:6px;">
+                                    <div style="font-weight:700;font-size:13px;color:#222;">
+                                        {rstat['room']}</div>
+                                    <span style="background:{badge_color};color:#fff;font-size:10px;
+                                               font-weight:700;padding:2px 8px;border-radius:20px;">
+                                        {rstat['type']}</span>
+                                  </div>
+                                  <div style="font-size:12px;color:#666;margin-bottom:6px;">
+                                    {rstat['sessions']} session{'s' if rstat['sessions'] != 1 else ''}
+                                    &nbsp;·&nbsp;{util}%
+                                  </div>
+                                  <div style="background:#e0e0e0;border-radius:8px;height:8px;width:100%;">
+                                    <div style="width:{util}%;background:{bar_color};
+                                                height:8px;border-radius:8px;"></div>
+                                  </div>
+                                </div>""",
+                                unsafe_allow_html=True,
+                            )
 
-            def room_cell(row):
-                course = str(row.get("course_id",""))
-                room   = str(row.get("room",""))
-                prof   = str(row.get(prof_cols[0],"")) if prof_cols else ""
-                return f"{course} | {prof}" if selected_room != "All Rooms" else f"{course} | {room}"
+            with tab_detail:
+                room_select_list = ["— Select a room to inspect —"] + all_rooms
+                selected_room = st.selectbox(
+                    "🏫 Room:", room_select_list, key="room_detail_select"
+                )
 
-            grid_rooms = build_timetable_grid(df_room_filtered, room_cell)
-            style_fn   = make_style_fn(course_color_map)
+                if selected_room == "— Select a room to inspect —":
+                    st.markdown(
+                        "<div style='background:#f0f4ff;border:1.5px solid #c5cae9;"
+                        "border-radius:12px;padding:18px 20px;color:#555;font-size:15px;'>"
+                        "👆 Select a room above to view its full weekly timetable and session list."
+                        "</div>",
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    df_room_filtered = df_raw_rooms[
+                        df_raw_rooms[room_col_name] == selected_room
+                    ]
+                    sel_stat_rows = stats_df[stats_df["room"] == selected_room]
+                    if not sel_stat_rows.empty:
+                        rstat_sel = sel_stat_rows.iloc[0]
+                        ri1, ri2, ri3 = st.columns(3)
+                        ri1.metric("Sessions This Week", int(rstat_sel["sessions"]))
+                        ri2.metric("Utilization", f"{rstat_sel['utilization']}%")
+                        ri3.metric("Room Type", rstat_sel["type"])
 
-            try:
-                styled_rooms = grid_rooms.style.map(style_fn)
-            except AttributeError:
-                styled_rooms = grid_rooms.style.applymap(style_fn)
+                    st.markdown("#### 🗓️ Weekly Timetable")
 
-            st.dataframe(styled_rooms, use_container_width=True, height=500)
-            render_legend(course_color_map)
+                    def room_cell_detail(row):
+                        course = str(row.get("course_id", ""))
+                        prof   = str(row.get(prof_col_name, "")) if prof_col_name else ""
+                        return f"{course} | {prof}"
 
-            st.markdown("### 📋 Room Assignment Details")
-            df_room_table = df_room_filtered.copy()
-            if "time_start" in df_room_table.columns:
-                df_room_table["time_start"] = df_room_table["time_start"].apply(format_minutes)
-            if "time_end" in df_room_table.columns:
-                df_room_table["time_end"] = df_room_table["time_end"].apply(format_minutes)
-            st.dataframe(df_room_table, use_container_width=True, height=250)
+                    grid_rooms = build_timetable_grid(df_room_filtered, room_cell_detail)
+                    style_fn   = make_style_fn(course_color_map)
+                    try:
+                        styled_rooms = grid_rooms.style.map(style_fn)
+                    except AttributeError:
+                        styled_rooms = grid_rooms.style.applymap(style_fn)
+
+                    st.dataframe(styled_rooms, use_container_width=True, height=500)
+                    render_legend(course_color_map)
+
+                    st.markdown("#### 📋 Session Details")
+                    df_room_table = df_room_filtered.copy()
+                    if "time_start" in df_room_table.columns:
+                        df_room_table["time_start"] = df_room_table["time_start"].apply(format_minutes)
+                    if "time_end" in df_room_table.columns:
+                        df_room_table["time_end"] = df_room_table["time_end"].apply(format_minutes)
+                    st.dataframe(df_room_table, use_container_width=True, height=260)
+
+            with tab_conflicts:
+                if not conflicts_list:
+                    st.success(
+                        "✅ No room conflicts detected — all rooms are properly allocated."
+                    )
+                else:
+                    st.error(
+                        f"🚨 {len(conflicts_list)} overlap(s) found. "
+                        "These rooms have sessions assigned at the same time:"
+                    )
+                    st.dataframe(
+                        pd.DataFrame(conflicts_list), use_container_width=True, height=300
+                    )
+                    st.markdown(
+                        "<div style='background:#fff3e0;border-left:4px solid #e65100;"
+                        "border-radius:6px;padding:12px 16px;margin-top:12px;font-size:14px;'>"
+                        "⚠️ Go to <strong>Manual Adjustments</strong> to resolve these by "
+                        "changing the time slot or room of the affected sessions.</div>",
+                        unsafe_allow_html=True,
+                    )
 
         except Exception as e:
-            st.warning("Room data not available. Please generate the schedule first.")
-    else:
-        st.info("Generate a schedule to view room allocations.")
+            st.warning(f"Room data not available. Error: {e}")
 
 
 # ==========================================
