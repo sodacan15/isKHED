@@ -24,7 +24,7 @@ def format_minutes(minutes):
             hours_12 = 12
         return f"{hours_12}:{mins:02d} {period}"
     except:
-        return minutes 
+        return minutes
 
 def format_room_name(name):
     """Cleans up database room names (e.g., '4th_east_wing' -> '4th East Wing')"""
@@ -60,10 +60,10 @@ header { background-color: var(--pup-maroon) !important; }
 [data-testid="stSidebar"]{ background-color:var(--pup-dark) !important; }
 
 /* Force standard text to be readable dark grey */
-[data-testid="stAppViewContainer"] h1, 
-[data-testid="stAppViewContainer"] h2, 
-[data-testid="stAppViewContainer"] h3, 
-[data-testid="stAppViewContainer"] p, 
+[data-testid="stAppViewContainer"] h1,
+[data-testid="stAppViewContainer"] h2,
+[data-testid="stAppViewContainer"] h3,
+[data-testid="stAppViewContainer"] p,
 [data-testid="stAppViewContainer"] label,
 [data-testid="stMetricValue"] div { color: var(--text-dark) !important; }
 [data-testid="stMetricLabel"] p { color: #555555 !important; font-weight: 600 !important; }
@@ -135,8 +135,10 @@ if imported_file is not None:
     st.session_state.schedule_generated = True
     st.sidebar.success("Schedule loaded successfully.")
 
+# --- RE-RUN FROM IMPORTED MASTER ---
 st.sidebar.divider()
 st.sidebar.markdown("**🔁 Re-run from Imported Schedule**")
+st.sidebar.caption("Migrate the imported schedule's constraints back into inputSheet format, then re-run the algorithm.")
 rerun_from_master = st.sidebar.button("🔁 Re-run from Imported Schedule", use_container_width=True)
 
 # Pipeline stage labels for the progress bar
@@ -161,27 +163,45 @@ tab1, tab2, tab3 = st.tabs(["📊 Master Schedule", "🏢 Room Allocations", "�
 # ------------------------------------------
 with tab1:
     st.subheader("Firm Master Schedules")
-    
-    # Check if user clicked Generate
+
+    # --- HANDLE RE-RUN FROM IMPORTED SCHEDULE ---
     if rerun_from_master:
-    if st.session_state.imported_schedule:
-        from migrate_master_to_input import migrate
-        with st.spinner("Preparing inputSheet from imported schedule..."):
-            migrate(st.session_state.active_schedule_path, "inputSheet.xlsx")
-        st.session_state.active_schedule_path = "masterSchedule.xlsx"
-        st.session_state.imported_schedule = False
-        _do_generate = True
+        if st.session_state.imported_schedule and st.session_state.active_schedule_path:
+            try:
+                from migrate_master_to_input import migrate
+                with st.spinner("Migrating imported schedule's constraints to inputSheet format..."):
+                    counts = migrate(st.session_state.active_schedule_path, "inputSheet.xlsx")
+                st.success(
+                    f"✅ Migration complete — "
+                    f"{counts.get('Professors', 0)} professors, "
+                    f"{counts.get('Courses', 0)} courses, "
+                    f"{counts.get('Rooms', 0)} rooms, "
+                    f"{counts.get('Blocks', 0)} blocks loaded. "
+                    "Running algorithm now…"
+                )
+                st.session_state.active_schedule_path = "masterSchedule.xlsx"
+                st.session_state.imported_schedule = False
+                _do_generate = True
+            except Exception as _mig_err:
+                st.error(f"Migration failed: {_mig_err}")
+                _do_generate = False
+        else:
+            st.warning("Please import a masterSchedule.xlsx first using the sidebar uploader.")
+            _do_generate = False
     else:
-        st.warning("Import a masterSchedule.xlsx first.")
         _do_generate = False
-else:
-    _do_generate = False
+
+    # --- MAIN GENERATE PIPELINE ---
     if run_algorithms or _do_generate:
+
+        # Save uploaded inputSheet if coming from the normal flow
         if uploaded_file is not None and not _do_generate:
             with open("inputSheet.xlsx", "wb") as f:
                 f.write(uploaded_file.getbuffer())
             st.session_state.active_schedule_path = "masterSchedule.xlsx"
             st.session_state.imported_schedule = False
+
+        if uploaded_file is not None or _do_generate:
 
             # --- PROGRESS BAR ---
             col_prog, col_del = st.columns([3, 1])
@@ -212,7 +232,6 @@ else:
     word-break:break-all;
     line-height:1.6;
 }
-/* colour specific keywords */
 .term-box .ok   { color:#3fb950; }
 .term-box .warn { color:#d29922; }
 .term-box .err  { color:#f85149; }
@@ -257,7 +276,6 @@ else:
 
             def render_terminal(lines):
                 body = "<br>".join(colorize(l) for l in lines)
-                # auto-scroll trick: empty anchor at the bottom
                 terminal_placeholder.markdown(
                     f'<div class="term-box">{body}<a id="term-end"></a></div>'
                     '<script>document.getElementById("term-end")?.scrollIntoView();</script>',
@@ -268,16 +286,14 @@ else:
             log_lines = ["$ python main.py", "─" * 48]
             render_terminal(log_lines)
 
-            result_holder = {"done": False, "error": None}
             proc = subprocess.Popen(
-                [sys.executable, "-u", "main.py"],   # -u = unbuffered stdout
+                [sys.executable, "-u", "main.py"],
                 stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,             # merge stderr into stdout
+                stderr=subprocess.STDOUT,
                 text=True,
-                bufsize=1,                            # line-buffered
+                bufsize=1,
             )
 
-            stage_idx   = 0
             last_update = time.time()
 
             STAGE_KEYWORDS = [
@@ -297,11 +313,9 @@ else:
                     continue
 
                 log_lines.append(line)
-                # Keep last 120 lines so the box doesn't get enormous
                 if len(log_lines) > 120:
                     log_lines = log_lines[-120:]
 
-                # Advance progress bar based on keywords in output
                 for kw, pct, label in STAGE_KEYWORDS[stage_ptr:]:
                     if kw.lower() in line.lower():
                         progress_bar.progress(pct)
@@ -309,13 +323,12 @@ else:
                         stage_ptr = STAGE_KEYWORDS.index((kw, pct, label)) + 1
                         break
 
-                # Throttle DOM updates to ~4 per second to avoid hammering Streamlit
                 if time.time() - last_update > 0.25:
                     render_terminal(log_lines)
                     last_update = time.time()
 
             proc.wait()
-            render_terminal(log_lines)   # final flush
+            render_terminal(log_lines)
 
             progress_bar.progress(1.0)
             progress_label.empty()
@@ -332,43 +345,40 @@ else:
                 render_terminal(log_lines)
                 st.session_state.schedule_generated = True
                 st.success("✨ Schedule finalized successfully!")
-        else:
+
+        elif not _do_generate:
             st.error("Please upload the input constraints file first.")
             st.session_state.schedule_generated = False
 
     # Show banner when viewing an imported schedule
     if st.session_state.imported_schedule and st.session_state.schedule_generated:
-        st.info("📂 Viewing an imported master schedule. Click 'Generate Schedule' to create a fresh one.")
+        st.info("📂 Viewing an imported master schedule. Use '🔁 Re-run from Imported Schedule' to re-run the algorithm with these constraints.")
 
     # Display logic (runs if schedule exists in memory)
     if st.session_state.schedule_generated and (uploaded_file is not None or st.session_state.imported_schedule):
         try:
-            # Read output from backend (or imported file)
-            df_raw = pd.read_excel(st.session_state.active_schedule_path, sheet_name="All_Assignments") 
-            
+            df_raw = pd.read_excel(st.session_state.active_schedule_path, sheet_name="All_Assignments")
+
             if 'room' in df_raw.columns: df_raw['room'] = df_raw['room'].apply(format_room_name)
-            
-            # Dynamically identify relevant columns
+
             prof_cols = [col for col in df_raw.columns if 'prof' in col.lower() or 'instructor' in col.lower() or 'faculty' in col.lower()]
             block_cols = [col for col in df_raw.columns if 'block' in col.lower() or 'section' in col.lower()]
-            
+
             prof_col_name = prof_cols[0] if prof_cols else None
             block_col_name = block_cols[0] if block_cols else None
 
-            # Toggle switch for audience view
             schedule_view = st.radio("Generate Firm Schedule For:", ["Students (By Block)", "Professors"], horizontal=True)
-            
+
             df_filtered = df_raw
             selected_entity = "All"
-            
-            # Apply appropriate filters based on toggle selection
+
             if schedule_view == "Students (By Block)" and block_col_name:
                 block_list = ["All Blocks"] + sorted(df_raw[block_col_name].dropna().unique().tolist())
                 selected_entity = st.selectbox(f"🔍 Select Block/Section:", block_list)
                 if selected_entity != "All Blocks":
                     df_filtered = df_raw[df_raw[block_col_name] == selected_entity]
                     st.markdown(f"### 🎓 Official Schedule: {selected_entity}")
-                    
+
             elif schedule_view == "Professors" and prof_col_name:
                 prof_list = ["All Professors"] + sorted(df_raw[prof_col_name].dropna().unique().tolist())
                 selected_entity = st.selectbox(f"🔍 Select Professor:", prof_list)
@@ -378,16 +388,15 @@ else:
 
             # --- VISUAL TIMETABLE MATRIX ---
             days_of_week = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
-            time_bins = list(range(420, 1290, 30)) # Generates slots from 7:00 AM to 9:30 PM
+            time_bins = list(range(420, 1290, 30))
             time_labels = [format_minutes(t) for t in time_bins]
-            
+
             grid_df = pd.DataFrame("", index=time_labels, columns=days_of_week)
-            
-            # Populate visual grid
+
             for _, row in df_filtered.iterrows():
                 day = row.get('day')
                 if day not in days_of_week: continue
-                
+
                 try:
                     start = int(row['time_start'])
                     end = int(row['time_end'])
@@ -395,22 +404,21 @@ else:
                     room = str(row.get('room', ''))
                     prof = str(row.get(prof_col_name, '')) if prof_col_name else ''
                     block = str(row.get(block_col_name, '')) if block_col_name else ''
-                    
+
                     if schedule_view == "Students (By Block)":
                         cell_text = f"{course} | {prof} | {room}"
                     else:
                         cell_text = f"{course} | {block} | {room}"
-                        
+
                     for t, t_label in zip(time_bins, time_labels):
                         if start <= t < end:
                             if grid_df.at[t_label, day] == "":
                                 grid_df.at[t_label, day] = cell_text
                             else:
-                                grid_df.at[t_label, day] += f" \n🛑 {cell_text}" 
+                                grid_df.at[t_label, day] += f" \n🛑 {cell_text}"
                 except:
-                    pass 
-                    
-            # Build per-course color palette for the legend and grid
+                    pass
+
             _PALETTE = [
                 '#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd',
                 '#8c564b','#e377c2','#17becf','#bcbd22','#7f7f7f',
@@ -434,7 +442,6 @@ else:
 
             st.dataframe(styled_grid, use_container_width=True, height=500)
 
-            # Color legend
             if _course_colors:
                 st.markdown("**🎨 Color Legend:**")
                 legend_html = " ".join(
@@ -443,18 +450,17 @@ else:
                     for cid, c in sorted(_course_colors.items())
                 )
                 st.markdown(legend_html, unsafe_allow_html=True)
-            
-            # --- DETAILED RAW DATA LOG ---
+
             st.markdown("### 📋 Detailed Records")
             df_table = df_filtered.copy()
             if 'time_start' in df_table.columns: df_table['time_start'] = df_table['time_start'].apply(format_minutes)
             if 'time_end' in df_table.columns: df_table['time_end'] = df_table['time_end'].apply(format_minutes)
             st.dataframe(df_table, use_container_width=True, height=420)
-            
+
         except Exception as e:
             st.warning(f"Could not load master schedule. Error: {e}")
-            
-    elif not run_algorithms:
+
+    elif not run_algorithms and not rerun_from_master:
         st.info("Upload the input file and click 'Generate Schedule' to view the timetable.")
 
 
@@ -463,67 +469,75 @@ else:
 # ------------------------------------------
 with tab2:
     st.subheader("Room Occupancy Matrix")
-    
+
     if st.session_state.schedule_generated and (uploaded_file is not None or st.session_state.imported_schedule):
         try:
-            df_raw_rooms = pd.read_excel(st.session_state.active_schedule_path, sheet_name="All_Assignments") 
-            
+            df_raw_rooms = pd.read_excel(st.session_state.active_schedule_path, sheet_name="All_Assignments")
+
             if 'room' in df_raw_rooms.columns: df_raw_rooms['room'] = df_raw_rooms['room'].apply(format_room_name)
-            
+
             room_cols = [col for col in df_raw_rooms.columns if 'room' in col.lower() or 'location' in col.lower()]
             prof_cols = [col for col in df_raw_rooms.columns if 'prof' in col.lower() or 'instructor' in col.lower() or 'faculty' in col.lower()]
-            
+
             if room_cols:
-                room_col_name = room_cols[0] 
+                room_col_name = room_cols[0]
                 room_list = ["All Rooms"] + sorted(df_raw_rooms[room_col_name].dropna().unique().tolist())
                 selected_room = st.selectbox(f"🏫 Check Occupancy for {room_col_name}:", room_list)
-                
+
                 if selected_room != "All Rooms":
                     df_room_filtered = df_raw_rooms[df_raw_rooms[room_col_name] == selected_room]
                 else:
                     df_room_filtered = df_raw_rooms
             else:
                 df_room_filtered = df_raw_rooms
-                
+
             # --- ROOM VISUAL TIMETABLE ---
             st.markdown("### 🗓️ Visual Room Occupancy")
+            days_of_week = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+            time_bins = list(range(420, 1290, 30))
+            time_labels = [format_minutes(t) for t in time_bins]
+
             grid_df_rooms = pd.DataFrame("", index=time_labels, columns=days_of_week)
-            
+
             for _, row in df_room_filtered.iterrows():
                 day = row.get('day')
                 if day not in days_of_week: continue
-                
+
                 try:
                     start = int(row['time_start'])
                     end = int(row['time_end'])
                     course = str(row.get('course_id', ''))
                     room = str(row.get('room', ''))
                     prof = str(row.get(prof_cols[0], '')) if prof_cols else ''
-                    
+
                     cell_text = f"{course} | {prof}" if selected_room != "All Rooms" else f"{course} | {room}"
-                    
+
                     for t, t_label in zip(time_bins, time_labels):
                         if start <= t < end:
                             if grid_df_rooms.at[t_label, day] == "":
                                 grid_df_rooms.at[t_label, day] = cell_text
                             else:
-                                grid_df_rooms.at[t_label, day] += f" 🛑 {cell_text}" 
+                                grid_df_rooms.at[t_label, day] += f" 🛑 {cell_text}"
                 except:
                     pass
-                    
+
+            def style_timetable_rooms(val):
+                if val == "":
+                    return 'background-color: #FFFFFF; color: #333333; border: 1px solid #E0E0E0;'
+                return 'background-color: #880000; color: #FFFFFF; font-weight: 700; border: 1px solid rgba(255,255,255,0.3); text-align: center;'
+
             try:
-                styled_room_grid = grid_df_rooms.style.map(style_timetable)
+                styled_room_grid = grid_df_rooms.style.map(style_timetable_rooms)
             except AttributeError:
-                styled_room_grid = grid_df_rooms.style.applymap(style_timetable)
-                
+                styled_room_grid = grid_df_rooms.style.applymap(style_timetable_rooms)
+
             st.dataframe(styled_room_grid, use_container_width=True, height=500)
-            
-            # --- ROOM RAW DATA LOG ---
+
             df_room_table = df_room_filtered.copy()
             if 'time_start' in df_room_table.columns: df_room_table['time_start'] = df_room_table['time_start'].apply(format_minutes)
             if 'time_end' in df_room_table.columns: df_room_table['time_end'] = df_room_table['time_end'].apply(format_minutes)
-            st.dataframe(df_room_table, use_container_width=True, height=250) 
-            
+            st.dataframe(df_room_table, use_container_width=True, height=250)
+
         except Exception as e:
             st.warning("Room data not available. Please generate the schedule first.")
     else:
@@ -535,7 +549,7 @@ with tab2:
 # ------------------------------------------
 with tab3:
     st.subheader("System Health & Manual Overrides")
-    
+
     if st.session_state.schedule_generated and (uploaded_file is not None or st.session_state.imported_schedule):
 
         # --- REAL-TIME CONFLICT REPORT ---
@@ -546,7 +560,6 @@ with tab3:
                 st.session_state.active_schedule_path, sheet_name="All_Assignments"
             )
 
-            # Build plain dicts with correct types expected by resolve_conflicts()
             schedule_dicts = df_conflicts_raw.to_dict(orient="records")
             for s in schedule_dicts:
                 for key in ("time_start", "time_end"):
@@ -562,9 +575,7 @@ with tab3:
             report = resolve_conflicts(schedule_dicts)
             total  = report["total"]
 
-            # ── helpers ──────────────────────────────────────────────
             def _cid(slot):
-                """Strip __block__lab/lec suffix → bare course id."""
                 return str(slot.get("course_id", "?")).split("__")[0]
 
             def _sec(slot):
@@ -696,7 +707,6 @@ with tab3:
                 st.error(f"⚠️ {len(hard_rows)} hard violation(s) found.")
                 df_hard = pd.DataFrame(hard_rows)[["Type","Course","Section","Day","Time","Reason"]]
 
-                # styled table
                 def _style_hard(row):
                     color_map = {
                         "👨‍🏫 Professor Double-Booking":  "#3d1a1a",
@@ -744,7 +754,6 @@ with tab3:
                 else:
                     st.warning(f"ℹ️ {len(soft_warnings)} suggestion(s) to review.")
 
-                    # Parse the warning strings into structured rows
                     import re
                     soft_rows = []
                     TAG_MAP = {
@@ -760,7 +769,6 @@ with tab3:
                         tag  = tag.group(1) if tag else "OTHER"
                         type_label, reason_base = TAG_MAP.get(tag, (f"ℹ️ {tag}", w))
 
-                        # Try to pull course/section from the warning string
                         course_match  = re.search(r"course\s+([\w_]+)", w, re.I)
                         section_match = re.search(r"[Bb]lock\s+([\w\-]+)", w)
                         prof_match    = re.search(r"Prof\s+([\w_]+)", w)
@@ -769,7 +777,6 @@ with tab3:
                         section_str = section_match.group(1) if section_match else "—"
                         who_str     = prof_match.group(1)    if prof_match    else "—"
 
-                        # Clean readable reason
                         readable = w
                         for old_tag in TAG_MAP:
                             readable = readable.replace(f"[{old_tag}]", "").strip()
@@ -804,29 +811,33 @@ with tab3:
         try:
             st.markdown("### ✏️ Interactive Override Editor")
             st.write("Double-click any cell below to manually fix soft constraints or override assignments.")
-            
-            df_edit = pd.read_excel(st.session_state.active_schedule_path, sheet_name="All_Assignments") 
-            
+
+            df_edit = pd.read_excel(st.session_state.active_schedule_path, sheet_name="All_Assignments")
+
             if 'room' in df_edit.columns: df_edit['room'] = df_edit['room'].apply(format_room_name)
             if 'time_start' in df_edit.columns: df_edit['time_start'] = df_edit['time_start'].apply(format_minutes)
             if 'time_end' in df_edit.columns: df_edit['time_end'] = df_edit['time_end'].apply(format_minutes)
-            
-            # Render interactive dataframe where cells can be modified by the admin
+
             edited_df = st.data_editor(df_edit, use_container_width=True, height=400, num_rows="dynamic")
-            
-            # Save logic for exporting overrides
+
             if st.button("💾 Save Manual Overrides", use_container_width=True):
                 try:
-                    with pd.ExcelWriter("masterSchedule_Overridden.xlsx") as writer:
+                    with pd.ExcelWriter("masterSchedule_Overridden.xlsx", engine="openpyxl") as writer:
+                        # Copy all original sheets first (Professors, Courses, Rooms, etc.)
+                        original_wb = pd.ExcelFile(st.session_state.active_schedule_path)
+                        for sheet in original_wb.sheet_names:
+                            if sheet != "All_Assignments":
+                                pd.read_excel(st.session_state.active_schedule_path, sheet_name=sheet).to_excel(writer, sheet_name=sheet, index=False)
+                        # Write the edited assignments
                         edited_df.to_excel(writer, sheet_name="All_Assignments", index=False)
                     st.session_state.active_schedule_path = "masterSchedule_Overridden.xlsx"
                     st.success("✅ Overrides saved! Master Schedule and Room Allocations now reflect your changes.")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Failed to save overrides: {e}")
-                    
+
         except Exception as e:
             st.warning("Override data not available.")
-            
+
     else:
         st.info("Generate a schedule to view system health and access manual overrides.")
