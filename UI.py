@@ -144,6 +144,7 @@ st.markdown("""
 st.session_state.setdefault("schedule_generated", False)
 st.session_state.setdefault("active_schedule_path", "masterSchedule.xlsx")
 st.session_state.setdefault("imported_schedule", False)
+st.session_state.setdefault("terminal_log", [])
 
 
 # ==========================================
@@ -204,8 +205,58 @@ COLOR_PALETTE = [
 
 
 # ==========================================
-# TERMINAL HELPERS
+# TERMINAL LOG CONFLICT PARSER
 # ==========================================
+# Maps keywords the algorithm prints to our display labels + arity.
+# Arity 2 = involves two slots (e.g. double-booking), 1 = single slot.
+_CONFLICT_PATTERNS = [
+    ("professor_conflict",   re.compile(r"prof.*conflict|double.book.*prof|prof.*double.book", re.I),   "👨‍🏫 Professor Double-Booking", 2),
+    ("room_conflict",        re.compile(r"room.*conflict|double.book.*room|room.*double.book", re.I),    "🏫 Room Double-Booking",        2),
+    ("modality_conflict",    re.compile(r"modality.*conflict|modality.*mix|f2f.*online.*same", re.I),   "🔄 Modality Mix",               2),
+    ("block_overlap",        re.compile(r"block.*overlap|section.*overlap|overlap.*block", re.I),        "🎓 Block Overlap",              2),
+    ("lab_violation",        re.compile(r"lab.*not.*f2f|lab.*online|lab.*modality", re.I),              "🧪 Lab Not F2F",                1),
+    ("time_bound",           re.compile(r"outside.*hour|time.*bound|not.*allowed.*time", re.I),         "⏰ Outside Allowed Hours",       1),
+    ("location_violation",   re.compile(r"invalid.*room|room.*invalid|location.*violation", re.I),      "📍 Invalid Room",               1),
+    ("sunday_violation",     re.compile(r"sunday.*class|class.*sunday|scheduled.*sunday", re.I),        "📅 Sunday Class",               1),
+]
+
+
+def parse_terminal_conflicts(log_lines: list[str]) -> list[dict]:
+    """
+    Scan terminal log lines for conflict/violation markers printed by main.py
+    and return them as rows ready for the violations table.
+    """
+    rows = []
+    for line in log_lines:
+        # Only look at lines that signal a problem
+        if not any(sig in line for sig in ("❌", "⚠️", "violation", "conflict", "overlap", "HARD", "FAILED")):
+            continue
+
+        matched_label = "⚠️ Constraint Violation"
+        for _key, pattern, label, _arity in _CONFLICT_PATTERNS:
+            if pattern.search(line):
+                matched_label = label
+                break
+
+        # Extract course/section/day/time from the line with loose regexes
+        course  = (re.search(r"\b([A-Z]{2,6}[\s_]?\d{3,4}[A-Z]?(?:L|LEC|LAB)?)\b", line) or
+                   re.search(r"course[:\s]+([^\s,\]]+)", line, re.I))
+        section = (re.search(r"\b([1-4][A-Z]{2,4}-\d+[A-Z]?)\b", line) or
+                   re.search(r"block[:\s]+([^\s,\]]+)", line, re.I) or
+                   re.search(r"section[:\s]+([^\s,\]]+)", line, re.I))
+        day     = re.search(r"\b(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday)\b", line, re.I)
+        time_   = re.search(r"\b(\d{1,2}:\d{2}\s*[AP]M(?:\s*[–-]\s*\d{1,2}:\d{2}\s*[AP]M)?)\b", line, re.I)
+
+        rows.append({
+            "Type":    matched_label,
+            "Course":  course.group(1)  if course  else "—",
+            "Section": section.group(1) if section else "—",
+            "Day":     day.group(1).title() if day else "—",
+            "Time":    time_.group(1)   if time_  else "—",
+            "Reason":  line.strip(),
+        })
+
+    return rows
 TERMINAL_CSS = """
 <style>
 .term-box {
@@ -277,7 +328,8 @@ def run_generation_pipeline():
     st.markdown(TERMINAL_CSS, unsafe_allow_html=True)
     terminal_placeholder = st.empty()
 
-    log_lines = ["$ python main.py", "─" * 48]
+    all_lines = ["$ python main.py", "─" * 48]   # unbounded, saved to session state
+    log_lines = all_lines[:]                       # capped display buffer
     render_terminal(terminal_placeholder, log_lines)
 
     proc = subprocess.Popen(
@@ -295,6 +347,7 @@ def run_generation_pipeline():
         line = raw_line.rstrip()
         if not line:
             continue
+        all_lines.append(line)
         log_lines.append(line)
         if len(log_lines) > 120:
             log_lines = log_lines[-120:]
@@ -316,15 +369,20 @@ def run_generation_pipeline():
     progress_label.empty()
 
     if proc.returncode != 0:
+        all_lines += ["─" * 48, "❌ Process exited with errors (see above)."]
         log_lines += ["─" * 48, "❌ Process exited with errors (see above)."]
         render_terminal(terminal_placeholder, log_lines)
         st.error("Pipeline error — check the terminal output above.")
         st.session_state.schedule_generated = False
     else:
+        all_lines += ["─" * 48, "✅ Schedule generation complete."]
         log_lines += ["─" * 48, "✅ Schedule generation complete."]
         render_terminal(terminal_placeholder, log_lines)
         st.session_state.schedule_generated = True
         st.success("✨ Schedule finalized successfully!")
+
+    # Persist full log so Tab 3 can parse conflicts from it
+    st.session_state.terminal_log = all_lines
 
 
 # ==========================================
@@ -723,13 +781,17 @@ with tab3:
             ("sunday_violations",     "📅 Sunday Class",               1),
         ]
 
-        hard_rows = []
+        # --- Primary: parse from the terminal log of the last run ---
+        terminal_rows = parse_terminal_conflicts(st.session_state.terminal_log)
+
+        # --- Fallback: live resolve_conflicts() ---
+        live_rows = []
         for key, label, arity in CATEGORIES:
             for item in report.get(key, []):
                 try:
                     if arity == 2:
                         s1, s2, _ = item
-                        hard_rows.append({
+                        live_rows.append({
                             "Type":    label,
                             "Course":  f"{_cid(s1)} & {_cid(s2)}",
                             "Section": _sec(s1),
@@ -741,7 +803,7 @@ with tab3:
                         })
                     else:
                         s1, _ = item
-                        hard_rows.append({
+                        live_rows.append({
                             "Type":    label,
                             "Course":  _cid(s1),
                             "Section": _sec(s1),
@@ -753,22 +815,20 @@ with tab3:
                 except Exception:
                     pass
 
-        # If live check found 0 but summary sheet says there are violations,
-        # show a warning so the user knows the table may be incomplete.
+        # Use terminal rows if we got any, otherwise fall back to live re-check
+        hard_rows    = terminal_rows if terminal_rows else live_rows
+        source_label = "terminal log" if terminal_rows else "live re-check"
+
         if not hard_rows and hard_count > 0:
             st.warning(
-                f"⚠️ The summary sheet reports **{hard_count}** hard violation(s), but the live "
-                "re-check returned none. This usually means the violation keys returned by "
-                "`resolve_conflicts` don't match the expected category names. "
-                "Check `csp_mcv.resolve_conflicts` return keys."
+                f"⚠️ Summary reports **{hard_count}** hard violation(s) but neither the "
+                f"terminal log nor `resolve_conflicts` returned details. "
+                f"Keys from resolve_conflicts: `{list(report.keys()) if report else 'n/a'}`"
             )
-            # Expose actual report keys for debugging
-            if report:
-                st.caption(f"Keys returned by resolve_conflicts: `{list(report.keys())}`")
         elif not hard_rows:
             st.success("✅ No hard constraint violations — schedule is fully compliant.")
         else:
-            st.error(f"⚠️ {len(hard_rows)} hard violation(s) found.")
+            st.error(f"⚠️ {len(hard_rows)} hard violation(s) found — sourced from {source_label}.")
             df_hard = pd.DataFrame(hard_rows)[["Type", "Course", "Section", "Day", "Time", "Reason"]]
             st.dataframe(
                 df_hard.style.apply(_style_hard, axis=1),
