@@ -48,28 +48,58 @@ def generate_time_slots(
 def expand_courses_by_block(courses: list, blocks: list) -> list:
     """
     For every (block, course) pair listed in a block's classes,
-    create a distinct Course instance with composite course_id
-    format: '{course_id}__{block_code}'.
+    create one or two distinct Course instances:
 
-    This ensures each block gets its own independent scheduled slot
-    for every course it teaches, even when two blocks share the same
-    course code (e.g. 1-A and 1-B both teach C1).
+    - Course with only lab or only lecture → one entry: '{course_id}__{block_code}'
+    - Course with BOTH lab AND lecture     → two entries:
+        '{course_id}__{block_code}__lab'  (is_lab=True,  uses time_for_lab duration)
+        '{course_id}__{block_code}__lec'  (has_lab=False, uses time_for_lec duration)
+      These two must be scheduled on the same day (enforced by CSP forward-check
+      and the hard constraint checker).
+
+    This ensures each block gets its own independent scheduled slot(s) per course.
     """
     expanded = []
     seen = set()
     for block in blocks:
         for cid in block.classes:
-            key = f"{cid}__{block.block_code}"
-            if key in seen:
-                continue
-            seen.add(key)
             base = next((c for c in courses if c.course_id == cid), None)
             if base is None:
                 continue
-            ec = deepcopy(base)
-            ec.course_id = key
-            ec.block     = block.block_code
-            expanded.append(ec)
+
+            if base.has_lab and base.has_lec:
+                # ── Lab component ──────────────────────────────────────────
+                lab_key = f"{cid}__{block.block_code}__lab"
+                if lab_key not in seen:
+                    seen.add(lab_key)
+                    ec = deepcopy(base)
+                    ec.course_id  = lab_key
+                    ec.block      = block.block_code
+                    ec.has_lec    = False   # pure lab slot
+                    ec.time_for_lec = 0
+                    expanded.append(ec)
+
+                # ── Lecture component ──────────────────────────────────────
+                lec_key = f"{cid}__{block.block_code}__lec"
+                if lec_key not in seen:
+                    seen.add(lec_key)
+                    ec = deepcopy(base)
+                    ec.course_id  = lec_key
+                    ec.block      = block.block_code
+                    ec.has_lab    = False   # pure lecture slot
+                    ec.time_for_lab = 0
+                    expanded.append(ec)
+
+            else:
+                # ── Single-component course ────────────────────────────────
+                key = f"{cid}__{block.block_code}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                ec = deepcopy(base)
+                ec.course_id = key
+                ec.block     = block.block_code
+                expanded.append(ec)
     return expanded
 
 

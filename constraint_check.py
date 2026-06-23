@@ -127,6 +127,53 @@ def compute_fitness(
 # HARD CONSTRAINT CHECKS
 # ─────────────────────────────────────────
 
+def check_lab_lec_pairs(schedule: list[dict]) -> list[str]:
+    """
+    Hard constraint: For every course that was split into a __lab and __lec
+    component, both must be:
+      1. On the same day.
+      2. Back-to-back (gap ≤ 30 min).
+    """
+    from csp_mcv import get_lab_lec_partner, is_lab_component, lab_lec_are_adjacent
+
+    violations = []
+    checked_pairs = set()
+
+    for slot in schedule:
+        cid = slot["course_id"]
+        if not is_lab_component(cid):
+            continue
+        partner_key = get_lab_lec_partner(cid)
+        if partner_key is None or partner_key in checked_pairs:
+            continue
+        checked_pairs.add(cid)
+        checked_pairs.add(partner_key)
+
+        partner_slot = next(
+            (s for s in schedule if s["course_id"] == partner_key), None
+        )
+        if partner_slot is None:
+            violations.append(
+                f"[LAB_LEC_MISSING] {base_course_id(cid)} (block {slot.get('block','?')}): "
+                f"lab component found but lecture component is missing."
+            )
+            continue
+
+        if slot["day"] != partner_slot["day"]:
+            violations.append(
+                f"[LAB_LEC_DAY] {base_course_id(cid)} (block {slot.get('block','?')}): "
+                f"lab on {slot['day']} but lecture on {partner_slot['day']} — must be same day."
+            )
+        elif not lab_lec_are_adjacent(slot, partner_slot):
+            violations.append(
+                f"[LAB_LEC_GAP] {base_course_id(cid)} (block {slot.get('block','?')}): "
+                f"lab ends {slot['time_end']} but lecture starts {partner_slot['time_start']} — "
+                f"gap exceeds 30 minutes."
+            )
+
+    return violations
+
+
 def check_hard_constraints(schedule: list[dict]) -> list[str]:
     violations = []
 
@@ -160,6 +207,9 @@ def check_hard_constraints(schedule: list[dict]) -> list[str]:
                     f"[MODALITY_MIX] {d1} and {d2} "
                     f"mix modality without 3-hour gap on {s1['day']}."
                 )
+
+    # Lab+lecture co-scheduling check
+    violations.extend(check_lab_lec_pairs(schedule))
 
     return violations
 
