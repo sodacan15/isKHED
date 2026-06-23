@@ -1,15 +1,42 @@
+# Python
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
+*.pyw
 .Python
 *.egg-info/
 dist/
 build/
+
+# Virtual environments
 .env
 .venv
 venv/
+.pythonlibs/
+
+# Database / secrets
 *.sqlite
 *.db
+.env.*
+
+# Generated schedule outputs (uploaded/created at runtime, not source)
 masterSchedule.xlsx
-pandas
+masterSchedule_imported.xlsx
+masterSchedule_Overridden.xlsx
+
+# Uploaded user inputs (created at runtime)
+inputSheet_uploaded.xlsx
+
+# Replit environment (not needed for Streamlit Cloud or other hosts)
+.replit
+.upm/
+.cache/
+
+# IDE configs
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
