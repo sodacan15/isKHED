@@ -318,6 +318,45 @@ if "active_tab" not in st.session_state:
     st.session_state.active_tab = "Master Schedule"
 if "edit_idx" not in st.session_state:
     st.session_state.edit_idx = None
+# Undo/redo history: list of {"df": DataFrame, "label": str, "ts": str}
+if "edit_history" not in st.session_state:
+    st.session_state.edit_history = []
+if "history_idx" not in st.session_state:
+    st.session_state.history_idx = -1   # -1 = nothing in history yet
+
+MAX_HISTORY = 20
+
+
+def push_history(df: pd.DataFrame, label: str):
+    """
+    Snapshot the current DataFrame into the undo stack.
+    Discards any redo entries above the current pointer.
+    """
+    import datetime
+    snapshot = {
+        "df":    df.copy(),
+        "label": label,
+        "ts":    datetime.datetime.now().strftime("%H:%M:%S"),
+    }
+    # Trim future entries if user undid then made a new change
+    st.session_state.edit_history = st.session_state.edit_history[: st.session_state.history_idx + 1]
+    st.session_state.edit_history.append(snapshot)
+    # Keep at most MAX_HISTORY snapshots
+    if len(st.session_state.edit_history) > MAX_HISTORY:
+        st.session_state.edit_history = st.session_state.edit_history[-MAX_HISTORY:]
+    st.session_state.history_idx = len(st.session_state.edit_history) - 1
+
+
+def write_df_to_excel(df: pd.DataFrame, path: str):
+    """Write updated df to masterSchedule.xlsx preserving Summary sheet."""
+    try:
+        existing_summary = pd.read_excel(path, sheet_name="Summary")
+    except Exception:
+        existing_summary = None
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        if existing_summary is not None:
+            existing_summary.to_excel(writer, sheet_name="Summary", index=False)
+        df.to_excel(writer, sheet_name="All_Assignments", index=False)
 
 # ==========================================
 # SIDEBAR
@@ -816,6 +855,15 @@ elif st.session_state.active_tab == "Manual Adjustments":
                 )
             else:
                 if st.button("💾 Save Changes to Master Schedule", use_container_width=True):
+                    # Snapshot BEFORE the change so we can undo back to it
+                    old_label = (
+                        f"{row.get('course_id','')} · {row.get('day','')} "
+                        f"{format_minutes(row.get('time_start',0))}–"
+                        f"{format_minutes(row.get('time_end',0))} · "
+                        f"{row.get('prof_id','')} · {row.get('room','')}"
+                    )
+                    push_history(df_edit, f"Before: {old_label}")
+
                     df_edit.at[chosen_idx, "day"]        = new_day
                     df_edit.at[chosen_idx, "time_start"] = new_start
                     df_edit.at[chosen_idx, "time_end"]   = new_end
@@ -823,17 +871,16 @@ elif st.session_state.active_tab == "Manual Adjustments":
                     df_edit.at[chosen_idx, "prof_id"]    = new_prof
                     df_edit.at[chosen_idx, "room"]       = new_room
 
+                    # Snapshot AFTER the change for redo
+                    new_label = (
+                        f"{row.get('course_id','')} · {new_day} "
+                        f"{format_minutes(new_start)}–{format_minutes(new_end)} · "
+                        f"{new_prof} · {new_room}"
+                    )
+                    push_history(df_edit, f"After: {new_label}")
+
                     try:
-                        try:
-                            existing_summary = pd.read_excel(master_path, sheet_name="Summary")
-                        except Exception:
-                            existing_summary = None
-
-                        with pd.ExcelWriter(master_path, engine="openpyxl") as writer:
-                            if existing_summary is not None:
-                                existing_summary.to_excel(writer, sheet_name="Summary", index=False)
-                            df_edit.to_excel(writer, sheet_name="All_Assignments", index=False)
-
+                        write_df_to_excel(df_edit, master_path)
                         st.success(
                             f"✅ **{row.get('course_id','')}** updated — "
                             f"{new_day} {format_minutes(new_start)}–{format_minutes(new_end)} · "
@@ -856,7 +903,111 @@ elif st.session_state.active_tab == "Manual Adjustments":
 
     st.divider()
 
-    # ── SECTION D: Full Assignment Table (read-only reference) ────────────────
+    # ── SECTION D: Undo / Redo ─────────────────────────────────────────────────
+    st.markdown("### ↩️ Edit History")
+
+    history      = st.session_state.edit_history
+    hist_idx     = st.session_state.history_idx
+    can_undo     = hist_idx > 0
+    can_redo     = hist_idx < len(history) - 1
+
+    undo_col, redo_col, clear_col = st.columns([1, 1, 2])
+
+    with undo_col:
+        if st.button(
+            "↩️ Undo",
+            disabled=not can_undo,
+            use_container_width=True,
+            help="Revert to the previous saved state.",
+        ):
+            st.session_state.history_idx -= 1
+            restored_df = history[st.session_state.history_idx]["df"].copy()
+            try:
+                write_df_to_excel(restored_df, master_path)
+                st.success(
+                    f"↩️ Undone to: **{history[st.session_state.history_idx]['label']}**"
+                )
+                st.rerun()
+            except Exception as e:
+                st.error(f"Undo failed: {e}")
+
+    with redo_col:
+        if st.button(
+            "↪️ Redo",
+            disabled=not can_redo,
+            use_container_width=True,
+            help="Re-apply the next saved state.",
+        ):
+            st.session_state.history_idx += 1
+            restored_df = history[st.session_state.history_idx]["df"].copy()
+            try:
+                write_df_to_excel(restored_df, master_path)
+                st.success(
+                    f"↪️ Redone to: **{history[st.session_state.history_idx]['label']}**"
+                )
+                st.rerun()
+            except Exception as e:
+                st.error(f"Redo failed: {e}")
+
+    with clear_col:
+        if st.button(
+            "🗑️ Clear History",
+            disabled=len(history) == 0,
+            use_container_width=True,
+            help="Erase all undo/redo history (does not change the current schedule).",
+        ):
+            st.session_state.edit_history = []
+            st.session_state.history_idx  = -1
+            st.rerun()
+
+    # History log
+    if history:
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.caption(
+            f"Showing {len(history)} snapshot(s) — current position: "
+            f"{'**' + str(hist_idx + 1) + '**'} of {len(history)}"
+        )
+
+        log_html = ""
+        for i, snap in enumerate(reversed(history)):
+            real_i  = len(history) - 1 - i      # index from oldest→newest
+            is_cur  = real_i == hist_idx
+            is_fut  = real_i > hist_idx
+
+            bg      = "#e8f5e9" if is_cur else "#f5f5f5"
+            border  = "#2e7d32" if is_cur else "#e0e0e0"
+            opacity = "0.45" if is_fut else "1"
+            marker  = "◀ current" if is_cur else ("↪ redo" if is_fut else "")
+            label   = snap["label"]
+            ts      = snap["ts"]
+
+            log_html += (
+                f"<div style='background:{bg}; border:1.5px solid {border}; border-radius:10px; "
+                f"padding:9px 14px; margin:4px 0; opacity:{opacity}; "
+                f"display:flex; justify-content:space-between; align-items:center;'>"
+                f"  <span style='font-size:13px; color:#333; font-weight:600;'>{label}</span>"
+                f"  <span style='font-size:12px; color:#888; margin-left:16px; white-space:nowrap;'>"
+                f"    {ts}&nbsp;&nbsp;<em style='color:#1565C0;'>{marker}</em>"
+                f"  </span>"
+                f"</div>"
+            )
+
+        st.markdown(
+            f"<div style='max-height:260px; overflow-y:auto; padding:2px;'>{log_html}</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            "<div style='background:#f5f5f5; border:1.5px solid #e0e0e0; border-radius:10px; "
+            "padding:12px 16px; color:#888; font-size:14px;'>"
+            "No changes yet — history will appear here after the first save."
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+    st.divider()
+
+    # ── SECTION E: Full Assignment Table (read-only reference) ────────────────
     st.markdown("### 📋 Full Assignment Reference Table")
     st.caption("Read-only view of the current schedule. Use the editor above to make changes.")
 
