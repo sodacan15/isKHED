@@ -138,7 +138,7 @@ if imported_file is not None:
 # --- RE-RUN FROM IMPORTED MASTER ---
 st.sidebar.divider()
 st.sidebar.markdown("**🔁 Re-run from Imported Schedule**")
-st.sidebar.caption("Migrate the imported schedule's constraints back into inputSheet format, then re-run the algorithm.")
+st.sidebar.caption("Re-runs the algorithm using the inputSheet.xlsx already on disk. Import a master schedule first, then click below.")
 rerun_from_master = st.sidebar.button("🔁 Re-run from Imported Schedule", use_container_width=True)
 
 # Pipeline stage labels for the progress bar
