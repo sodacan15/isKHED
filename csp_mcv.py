@@ -289,6 +289,12 @@ def build_csp(
                     continue
                 for slot in time_slots:
                     for room in rooms:
+                        # Enforce room availability for this specific day.
+                        # Fixes: gymnasium/rooms scheduled on days marked unavailable.
+                        _room_days = [d.strip() for d in room.available_days]
+                        if day.strip() not in _room_days:
+                            continue
+
                         # Route lab vs lec to the right room type up-front.
                         # Lab slots → must be a lab-capable room (S5xx / lab_room).
                         # Lec-only slots → must NOT be a lab room (allows E4xx, gymnasium,
@@ -310,7 +316,7 @@ def build_csp(
                             "is_lab":     course.has_lab,
                             "year_level": course.year_level,
                             "block":      getattr(course, "block", f"Year {course.year_level}"),
-                            "is_nstp":    course.course_id.startswith("NSTP"),
+                            "is_nstp":    "NSTP" in course.course_id.upper(),
                         }
 
                         # ── Hard constraint filters ───────────────────────
@@ -352,6 +358,34 @@ def build_csp(
                         domain.append(candidate)
 
         domains[course.course_id] = domain
+
+    # ── Lab-lec same-day constraint propagation ─────────────────────────
+    # After building all domains, restrict each (lab, lec) pair for the
+    # same base course + block to only the days they BOTH have available.
+    # This prevents the greedy from placing C11__lab on Monday and
+    # C11__lec on Wednesday (LAB_LEC_DAY hard violation).
+    _pair_map: dict[str, dict] = {}
+    for cid in domains:
+        if cid.endswith("__lab") or cid.endswith("__lec"):
+            parts = cid.split("__")          # [base, block, lab|lec]
+            if len(parts) < 3:
+                continue
+            pair_key = f"{parts[0]}__{parts[1]}"
+            tag = parts[2]                   # "lab" or "lec"
+            _pair_map.setdefault(pair_key, {})[tag] = cid
+
+    for pair_key, tags in _pair_map.items():
+        if "lab" not in tags or "lec" not in tags:
+            continue
+        lab_cid, lec_cid = tags["lab"], tags["lec"]
+        lab_days = {s["day"] for s in domains[lab_cid]}
+        lec_days = {s["day"] for s in domains[lec_cid]}
+        common_days = lab_days & lec_days
+        if common_days:
+            domains[lab_cid] = [s for s in domains[lab_cid] if s["day"] in common_days]
+            domains[lec_cid] = [s for s in domains[lec_cid] if s["day"] in common_days]
+        # If no common days exist keep full domain — the checker will flag it
+        # rather than silently producing an empty unschedulable domain.
 
     return domains
 
@@ -483,6 +517,23 @@ def greedy_mcv(
             pruned = forward_check(candidate, rest)
             if pruned is None:
                 continue  # dead end — try next
+
+            # ── Lab-lec same-day locking ───────────────────────────────
+            # When a __lab slot is chosen on day D, immediately restrict
+            # the paired __lec domain (same base course + block) to slots
+            # on day D, and vice versa.  Prevents LAB_LEC_DAY violations.
+            if "__lab" in course_id or "__lec" in course_id:
+                parts = course_id.split("__")
+                if len(parts) >= 3:
+                    pair_tag = "lec" if course_id.endswith("__lab") else "lab"
+                    pair_id  = f"{parts[0]}__{parts[1]}__{pair_tag}"
+                    if pair_id in pruned:
+                        locked = [s for s in pruned[pair_id]
+                                  if s["day"] == candidate["day"]]
+                        if locked:          # only restrict if viable
+                            pruned = dict(pruned)
+                            pruned[pair_id] = locked
+            # ─────────────────────────────────────────────────────────────
 
             result = backtrack(pruned, current + [candidate])
             if result is not None:
@@ -664,7 +715,23 @@ def build_initial_schedule(
 
     empty = [c for c, d in domains.items() if not d]
     if empty:
-        raise ValueError(f"CSP found no valid slots for: {empty}")
+        # Classify why each course has an empty domain for a useful error.
+        reasons = []
+        for cid in empty:
+            base = base_course_id(cid)
+            prof_match = any(base in p.subjects_handled for p in professors)
+            if not prof_match:
+                reasons.append(f"{cid} — no professor assigned to '{base}'")
+            else:
+                reasons.append(f"{cid} — all slots blocked by room/time/day constraints")
+        # Skip unschedulable courses instead of crashing so the rest can proceed.
+        print(f"⚠️  {len(empty)} course(s) could not be scheduled (skipped):")
+        for r in reasons:
+            print(f"   • {r}")
+        for cid in empty:
+            del domains[cid]
+        if not domains:
+            raise ValueError("No courses could be scheduled. Check professor assignments and room availability.")
 
     schedule = greedy_mcv(domains, existing_schedule)
 

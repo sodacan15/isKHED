@@ -289,25 +289,46 @@ with tab1:
                 except:
                     pass 
                     
+            # Build per-course color palette for the legend and grid
+            _PALETTE = [
+                '#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd',
+                '#8c564b','#e377c2','#17becf','#bcbd22','#7f7f7f',
+                '#aec7e8','#ffbb78','#98df8a','#ff9896','#c5b0d5',
+                '#393b79','#637939','#8c6d31','#843c39','#7b4173',
+            ]
+            _unique_cids = sorted(df_filtered['course_id'].dropna().unique().tolist()) if 'course_id' in df_filtered.columns else []
+            _course_colors = {cid: _PALETTE[i % len(_PALETTE)] for i, cid in enumerate(_unique_cids)}
+
             def style_timetable(val):
-                """Colors cells maroon if occupied, white if empty"""
-                if val != "":
-                    return 'background-color: #880000; color: #FFFFFF; font-weight: 700; border: 1px solid #FFD700; text-align: center;'
-                return 'background-color: #FFFFFF; color: #333333; border: 1px solid #E0E0E0;'
+                if val == "":
+                    return 'background-color: #FFFFFF; color: #333333; border: 1px solid #E0E0E0;'
+                cid = val.split(" | ")[0].strip()
+                bg = _course_colors.get(cid, '#880000')
+                return f'background-color: {bg}; color: #FFFFFF; font-weight: 700; border: 1px solid rgba(255,255,255,0.3); text-align: center;'
 
             try:
                 styled_grid = grid_df.style.map(style_timetable)
             except AttributeError:
                 styled_grid = grid_df.style.applymap(style_timetable)
-                
+
             st.dataframe(styled_grid, use_container_width=True, height=500)
+
+            # Color legend
+            if _course_colors:
+                st.markdown("**🎨 Color Legend:**")
+                legend_html = " ".join(
+                    f'<span style="background:{c};color:#fff;padding:4px 12px;border-radius:5px;'
+                    f'margin:3px;font-size:12px;font-weight:bold;display:inline-block">{cid}</span>'
+                    for cid, c in sorted(_course_colors.items())
+                )
+                st.markdown(legend_html, unsafe_allow_html=True)
             
             # --- DETAILED RAW DATA LOG ---
             st.markdown("### 📋 Detailed Records")
             df_table = df_filtered.copy()
             if 'time_start' in df_table.columns: df_table['time_start'] = df_table['time_start'].apply(format_minutes)
             if 'time_end' in df_table.columns: df_table['time_end'] = df_table['time_end'].apply(format_minutes)
-            st.dataframe(df_table, use_container_width=True, height=250) 
+            st.dataframe(df_table, use_container_width=True, height=420)
             
         except Exception as e:
             st.warning(f"Could not load master schedule. Error: {e}")
@@ -490,7 +511,9 @@ with tab3:
                 try:
                     with pd.ExcelWriter("masterSchedule_Overridden.xlsx") as writer:
                         edited_df.to_excel(writer, sheet_name="All_Assignments", index=False)
-                    st.success("✅ Overrides successfully saved to `masterSchedule_Overridden.xlsx`!")
+                    st.session_state.active_schedule_path = "masterSchedule_Overridden.xlsx"
+                    st.success("✅ Overrides saved! Master Schedule and Room Allocations now reflect your changes.")
+                    st.rerun()
                 except Exception as e:
                     st.error(f"Failed to save overrides: {e}")
                     

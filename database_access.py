@@ -34,6 +34,19 @@ def expand_rooms(rooms: list) -> list:
                 expanded.append(r)
         else:
             expanded.append(room)           # gymnasium, lab_room, etc.
+
+    # Always ensure a virtual "online" room exists for online-mode courses.
+    # Datasets that don't list an online room in their Rooms sheet would
+    # otherwise produce empty domains for every online course.
+    if not any(r.location_code == "online" for r in expanded):
+        _all_days = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"]
+        expanded.append(Room(
+            location_code="online",
+            location_map="Online (Virtual)",
+            capacity=9999,
+            available_days=_all_days,
+        ))
+
     return expanded
 
 
