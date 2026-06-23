@@ -8,6 +8,16 @@ from data_struct import Course, Professor, Room, Assignment
 
 
 # ─────────────────────────────────────────
+# HELPER: extract base course_id from composite key
+# Composite format: "{course_id}__{block_code}" or "{course_id}__{block_code}__irr"
+# ─────────────────────────────────────────
+
+def base_course_id(composite_id: str) -> str:
+    """Returns the original course_id without block/irr suffixes."""
+    return composite_id.split("__")[0]
+
+
+# ─────────────────────────────────────────
 # CSP — HARD CONSTRAINT FUNCTIONS
 # ─────────────────────────────────────────
 
@@ -58,10 +68,19 @@ def valid_time_bounds(slot: dict) -> bool:
 
 
 def valid_location(slot: dict) -> bool:
-    """Location must be 4th East Wing, 5th South Wing, or Gymnasium."""
-    allowed = {"4th_east_wing", "5th_south_wing", "gymnasium"}
+    """
+    F2F rooms must be specific East Wing rooms (E4xx),
+    South Wing rooms (S5xx), gymnasium, or lab_room.
+    Online classes have no physical location restriction.
+    """
     if slot["mode"] == "f2f":
-        return slot["room"] in allowed
+        room = slot["room"]
+        return (
+            room.startswith("E4")    # East Wing  E401–E417
+            or room.startswith("S5") # South Wing S501–S514
+            or room == "gymnasium"
+            or room == "lab_room"
+        )
     return True
 
 
@@ -89,13 +108,17 @@ def irregular_course_matches_student(slot: dict, course_id: str, student, schedu
     """
     For irregular students retaking a course, the backlog slot must be on one of
     their existing class days and close to their regular class times.
+    Uses base_course_id to handle composite keys.
     """
-    if course_id not in student.backlog:
+    base_cid = base_course_id(course_id)
+    if base_cid not in student.backlog:
         return True
 
+    # Find this student's regular (non-backlog) scheduled slots
     regular_slots = [
         s for s in schedule
-        if s["course_id"] in student.courses and s["course_id"] not in student.backlog
+        if base_course_id(s["course_id"]) in student.courses
+        and base_course_id(s["course_id"]) not in student.backlog
     ]
 
     # If there is no regular schedule info yet, do not over-constrain.
@@ -134,13 +157,18 @@ def build_csp(
     for course in courses:
         domain = []
         for prof in professors:
-            if course.course_id not in prof.subjects_handled:
+            # Match on the base course_id (without block/irr suffix)
+            if base_course_id(course.course_id) not in prof.subjects_handled:
                 continue
             for day in prof.days_available:
                 if day == "Sunday":
                     continue
                 for slot in time_slots:
                     for room in rooms:
+                        # Enforce the room's own available_days
+                        if day not in room.available_days:
+                            continue
+
                         candidate = {
                             "course_id":  course.course_id,
                             "prof_id":    prof.prof_id,
@@ -151,8 +179,8 @@ def build_csp(
                             "mode":       course.mode,
                             "is_lab":     course.has_lab,
                             "year_level": course.year_level,
-                            "block":      getattr(course, "block", f"Year {course.year_level}"),
-                            "is_nstp":    course.course_id.startswith("NSTP"),
+                            "block":      course.block if course.block else f"Year {course.year_level}",
+                            "is_nstp":    base_course_id(course.course_id).upper().startswith("NSTP"),
                         }
                         if not valid_time_bounds(candidate):
                             continue
@@ -221,9 +249,6 @@ def count_conflicts(candidate: dict, assigned: list[dict], remaining_domains: di
     """
     Lightweight heuristic: count how many already-assigned slots
     this candidate would conflict with.
-
-    The full-domain scan used previously was too expensive for the
-    larger richer dataset and caused the CSP stage to stall.
     """
     return sum(
         1
@@ -299,8 +324,6 @@ def greedy_mcv(
 
     Returns list of assigned slot dicts, or None if unsolvable.
     """
-    # Existing schedule entries are constraints for the current run,
-    # not extra assignments that should be copied into the output.
     assigned = []
     remaining_domains = dict(domains)
 

@@ -4,6 +4,7 @@
 
 from data_struct import Assignment, Professor, Student
 from csp_mcv import (
+    base_course_id,
     no_modality_mix,
     no_double_booking_professor,
     no_double_booking_room,
@@ -62,7 +63,8 @@ def power_outage_relocation_score(slot: dict, power_outage_schedule: list[str]) 
 
 
 def irregular_priority_score(slot: dict, student: dict) -> int:
-    if slot["course_id"] in student.get("backlog", []):
+    base_cid = base_course_id(slot["course_id"])
+    if base_cid in student.get("backlog", []):
         return 5
     return 0
 
@@ -129,31 +131,33 @@ def check_hard_constraints(schedule: list[dict]) -> list[str]:
     violations = []
 
     for slot in schedule:
+        display_id = base_course_id(slot['course_id'])
         if not lab_must_be_f2f(slot):
-            violations.append(f"[LAB_MODE] {slot['course_id']} on {slot['day']} is lab but not F2F.")
+            violations.append(f"[LAB_MODE] {display_id} on {slot['day']} is lab but not F2F.")
         if not valid_time_bounds(slot):
-            violations.append(f"[TIME_BOUNDS] {slot['course_id']} on {slot['day']} is outside allowed hours.")
+            violations.append(f"[TIME_BOUNDS] {display_id} on {slot['day']} is outside allowed hours.")
         if not valid_location(slot):
-            violations.append(f"[LOCATION] {slot['course_id']} assigned to invalid room: {slot['room']}.")
+            violations.append(f"[LOCATION] {display_id} assigned to invalid room: {slot['room']}.")
         if not no_class_sunday(slot):
-            violations.append(f"[SUNDAY] {slot['course_id']} scheduled on Sunday illegally.")
+            violations.append(f"[SUNDAY] {display_id} scheduled on Sunday illegally.")
 
     for i in range(len(schedule)):
         for j in range(i + 1, len(schedule)):
             s1, s2 = schedule[i], schedule[j]
+            d1, d2 = base_course_id(s1['course_id']), base_course_id(s2['course_id'])
             if not no_double_booking_professor(s1, s2):
                 violations.append(
                     f"[PROF_CONFLICT] Prof {s1['prof_id']} double-booked: "
-                    f"{s1['course_id']} and {s2['course_id']} on {s1['day']}."
+                    f"{d1} and {d2} on {s1['day']}."
                 )
             if not no_double_booking_room(s1, s2):
                 violations.append(
                     f"[ROOM_CONFLICT] Room {s1['room']} double-booked: "
-                    f"{s1['course_id']} and {s2['course_id']} on {s1['day']}."
+                    f"{d1} and {d2} on {s1['day']}."
                 )
             if not no_modality_mix(s1, s2):
                 violations.append(
-                    f"[MODALITY_MIX] {s1['course_id']} and {s2['course_id']} "
+                    f"[MODALITY_MIX] {d1} and {d2} "
                     f"mix modality without 3-hour gap on {s1['day']}."
                 )
 
@@ -186,7 +190,7 @@ def check_soft_constraints(
     for slot in schedule:
         if power_outage_relocation_score(slot, power_outage_schedule) > 0:
             warnings.append(
-                f"[POWER_OUTAGE] {slot['course_id']} on {slot['day']} needs relocation "
+                f"[POWER_OUTAGE] {base_course_id(slot['course_id'])} on {slot['day']} needs relocation "
                 f"(room={slot['room']})."
             )
 
@@ -195,7 +199,8 @@ def check_soft_constraints(
             for slot in schedule:
                 if irregular_priority_score(slot, student.__dict__) > 0:
                     warnings.append(
-                        f"[IRREGULAR] {student.name}: retaken course {slot['course_id']} "
+                        f"[IRREGULAR] {student.name}: retaken course "
+                        f"{base_course_id(slot['course_id'])} "
                         f"may not be adjacent to year-level courses."
                     )
 

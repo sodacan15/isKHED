@@ -3,20 +3,22 @@
 #
 # Pipeline:
 #   1. Load data (DB or Excel)
-#   2. CSP + MCV → initial draft schedule
-#   3. GA + SA   → refined schedule
-#   4. Constraint check → validate
-#   5. 2nd CSP run → schedule irregulars adjacent to their year-level classes
-#   6. Final constraint check → output master list
+#   2. Expand courses per block (one slot per block-course pair)
+#   3. CSP + MCV → initial draft schedule
+#   4. GA + SA   → refined schedule
+#   5. Constraint check → validate
+#   6. 2nd CSP run → schedule irregulars' backlog courses
+#   7. Final constraint check → output master list
 
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 import pandas as pd
 
 from database_access import load_all
 from data_struct import MasterList, Assignment
-from csp_mcv import build_csp, build_initial_schedule
+from csp_mcv import build_csp, build_initial_schedule, base_course_id
 from ga_sa import refine_schedule
 from constraint_check import run_checker
 
@@ -43,6 +45,61 @@ def generate_time_slots(
     return slots
 
 
+def expand_courses_by_block(courses: list, blocks: list) -> list:
+    """
+    For every (block, course) pair listed in a block's classes,
+    create a distinct Course instance with composite course_id
+    format: '{course_id}__{block_code}'.
+
+    This ensures each block gets its own independent scheduled slot
+    for every course it teaches, even when two blocks share the same
+    course code (e.g. 1-A and 1-B both teach C1).
+    """
+    expanded = []
+    seen = set()
+    for block in blocks:
+        for cid in block.classes:
+            key = f"{cid}__{block.block_code}"
+            if key in seen:
+                continue
+            seen.add(key)
+            base = next((c for c in courses if c.course_id == cid), None)
+            if base is None:
+                continue
+            ec = deepcopy(base)
+            ec.course_id = key
+            ec.block     = block.block_code
+            expanded.append(ec)
+    return expanded
+
+
+def expand_backlog_courses(courses: list, irregular_students: list) -> list:
+    """
+    For each irregular student, create a separate Course instance per
+    backlog (retaken) course with composite key:
+    '{course_id}__{block_code}__irr'.
+
+    Irregular students from the same block retaking the same course
+    share one slot (deduplicated by (block, course) pair).
+    """
+    expanded = []
+    seen = set()
+    for student in irregular_students:
+        for cid in student.backlog:
+            key = f"{cid}__{student.block}__irr"
+            if key in seen:
+                continue
+            seen.add(key)
+            base = next((c for c in courses if c.course_id == cid), None)
+            if base is None:
+                continue
+            ec = deepcopy(base)
+            ec.course_id = key
+            ec.block     = student.block
+            expanded.append(ec)
+    return expanded
+
+
 def assignments_to_dicts(schedule: list) -> list[dict]:
     """Ensures every item in the schedule is a plain dict."""
     result = []
@@ -54,6 +111,11 @@ def assignments_to_dicts(schedule: list) -> list[dict]:
     return result
 
 
+def clean_course_id(composite: str) -> str:
+    """Strip block/irr suffix: 'C1__1-A' → 'C1', 'C2__1-A__irr' → 'C2'."""
+    return composite.split("__")[0]
+
+
 def build_master_lists(schedule: list[dict]) -> dict[str, MasterList]:
     """Groups the final schedule into MasterList objects per block."""
     master_lists = {}
@@ -62,7 +124,9 @@ def build_master_lists(schedule: list[dict]) -> dict[str, MasterList]:
         block = raw_block.strip() if raw_block.strip() else f"Year {slot.get('year_level', '?')}"
         if block not in master_lists:
             master_lists[block] = MasterList(block=block)
-        master_lists[block].add(Assignment(**slot))
+        slot_copy = dict(slot)
+        slot_copy["course_id"] = clean_course_id(slot["course_id"])
+        master_lists[block].add(Assignment(**slot_copy))
     return master_lists
 
 
@@ -129,36 +193,34 @@ def save_schedule_to_excel(
 
     def to_row(item: dict) -> dict:
         return {
-            "course_id": item.get("course_id", ""),
-            "prof_id": item.get("prof_id", ""),
-            "room": item.get("room", ""),
-            "day": item.get("day", ""),
+            "course_id":  clean_course_id(item.get("course_id", "")),
+            "prof_id":    item.get("prof_id", ""),
+            "room":       item.get("room", ""),
+            "day":        item.get("day", ""),
             "time_start": item.get("time_start", ""),
-            "time_end": item.get("time_end", ""),
-            "mode": item.get("mode", ""),
-            "is_lab": item.get("is_lab", False),
+            "time_end":   item.get("time_end", ""),
+            "mode":       item.get("mode", ""),
+            "is_lab":     item.get("is_lab", False),
             "year_level": item.get("year_level", ""),
-            "block": item.get("block", ""),
-            "is_nstp": item.get("is_nstp", False),
+            "block":      item.get("block", ""),
+            "is_nstp":    item.get("is_nstp", False),
         }
 
     schedule_df = pd.DataFrame([to_row(item) for item in schedule])
     summary_df = pd.DataFrame(
         [{
-            "total_assignments": len(schedule),
-            "hard_violations": len(result.get("hard_violations", [])),
-            "soft_suggestions": len(result.get("soft_suggestions", result.get("soft_warnings", []))),
-            "status": "PASSED" if result.get("passed") else "REQUIRES REVIEW",
+            "total_assignments":  len(schedule),
+            "hard_violations":    len(result.get("hard_violations", [])),
+            "soft_suggestions":   len(result.get("soft_suggestions", result.get("soft_warnings", []))),
+            "status":             "PASSED" if result.get("passed") else "REQUIRES REVIEW",
         }]
     )
 
-    # If the workbook is open in Excel, Windows may lock it.
-    # Delete the old file first so the new one can be recreated safely.
     if output.exists():
         try:
             output.unlink()
         except PermissionError:
-            print(f"Warning: could not overwrite {output} because it is open. Please close Excel and rerun.")
+            print(f"Warning: could not overwrite {output} — file is open. Close Excel and rerun.")
             return
 
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -170,17 +232,17 @@ def save_schedule_to_excel(
             for day in ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]:
                 for item in master.get_day(day):
                     block_rows.append({
-                        "block": block_code,
-                        "day": day,
-                        "course_id": item.course_id,
-                        "prof_id": item.prof_id,
-                        "room": item.room,
+                        "block":      block_code,
+                        "day":        day,
+                        "course_id":  item.course_id,
+                        "prof_id":    item.prof_id,
+                        "room":       item.room,
                         "time_start": item.time_start,
-                        "time_end": item.time_end,
-                        "mode": item.mode,
-                        "is_lab": item.is_lab,
+                        "time_end":   item.time_end,
+                        "mode":       item.mode,
+                        "is_lab":     item.is_lab,
                         "year_level": item.year_level,
-                        "is_nstp": item.is_nstp,
+                        "is_nstp":    item.is_nstp,
                     })
             sheet_name = f"Block_{block_code.replace(' ', '_').replace('/', '_')}"
             pd.DataFrame(block_rows).to_excel(writer, sheet_name=sheet_name, index=False)
@@ -196,7 +258,6 @@ def find_default_source(project_dir: Path) -> str | None:
     for pattern in ("*.xlsx", "*.db"):
         candidates.extend(project_dir.rglob(pattern))
 
-    # Prefer files in a data/ folder if present.
     data_dir = project_dir / "data"
     if data_dir.exists():
         for pattern in ("*.xlsx", "*.db"):
@@ -223,12 +284,12 @@ def run_pipeline(source: str):
     print("\n📂 Step 1: Loading data...")
     data = load_all(source)
 
-    professors         = data["professors"]
-    courses            = data["courses"]
-    rooms              = data["rooms"]
-    blocks             = data["blocks"]
-    students           = data["students"]
-    power_outage       = data["power_outage"]
+    professors   = data["professors"]
+    courses      = data["courses"]
+    rooms        = data["rooms"]
+    blocks       = data["blocks"]
+    students     = data["students"]
+    power_outage = data["power_outage"]
 
     print(f"   Professors : {len(professors)}")
     print(f"   Courses    : {len(courses)}")
@@ -239,23 +300,32 @@ def run_pipeline(source: str):
 
     time_slots = generate_time_slots()
 
-    # Separate regular courses from irregular students' backlog courses
-    regular_students  = [s for s in students if s.status == "regular"]
+    # Separate student types
+    regular_students   = [s for s in students if s.status == "regular"]
     irregular_students = [s for s in students if s.status == "irregular"]
 
-    # Collect backlog course IDs (retaken courses, scheduled in 2nd CSP run)
-    backlog_course_ids = set()
+    # Collect backlog base course IDs
+    backlog_base_ids: set[str] = set()
     for s in irregular_students:
-        backlog_course_ids.update(s.backlog)
+        backlog_base_ids.update(s.backlog)
 
-    # Split courses: main run vs irregular 2nd run
-    main_courses     = [c for c in courses if c.course_id not in backlog_course_ids]
-    backlog_courses  = [c for c in courses if c.course_id in backlog_course_ids]
+    # ── STEP 2: Expand courses per block ───────────────────────
+    # Every (block, course) pair gets its own scheduled slot.
+    # Backlog courses are excluded from the main run; they get their
+    # own independent slots in Step 5 (2nd CSP run).
+    print("\n🔀 Step 2: Expanding courses by block...")
+    all_expanded = expand_courses_by_block(courses, blocks)
+    main_expanded = [
+        c for c in all_expanded
+        if c.course_id.split("__")[0] not in backlog_base_ids
+    ]
+    print(f"   Total block-course pairs: {len(all_expanded)}")
+    print(f"   Main run assignments    : {len(main_expanded)}")
 
-    # ── STEP 2: CSP + MCV → Initial Draft ─────────────────────
-    print("\n🔍 Step 2: CSP domain trimming + MCV greedy draft...")
+    # ── STEP 3: CSP + MCV → Initial Draft ─────────────────────
+    print("\n🔍 Step 3: CSP domain trimming + MCV greedy draft...")
     initial_schedule = build_initial_schedule(
-        courses=main_courses,
+        courses=main_expanded,
         professors=professors,
         rooms=rooms,
         time_slots=time_slots,
@@ -272,11 +342,9 @@ def run_pipeline(source: str):
         f"soft={len(initial_check['soft_warnings'])}"
     )
 
-    # ── STEP 3: GA + SA → Refined Schedule ────────────────────
-    print("\n🧬 Step 3: GA + SA refinement...")
-
-    # Rebuild domains for GA/SA (needed for mutation/neighbor search)
-    domains = build_csp(main_courses, professors, rooms, time_slots)
+    # ── STEP 4: GA + SA → Refined Schedule ────────────────────
+    print("\n🧬 Step 4: GA + SA refinement...")
+    domains = build_csp(main_expanded, professors, rooms, time_slots)
 
     refined_schedule = refine_schedule(
         base_schedule=initial_schedule,
@@ -297,8 +365,8 @@ def run_pipeline(source: str):
         f"soft={len(refined_check['soft_warnings'])}"
     )
 
-    # ── STEP 4: Constraint Check ───────────────────────────────
-    print("\n✅ Step 4: Constraint validation...")
+    # ── STEP 5: Constraint Check ───────────────────────────────
+    print("\n✅ Step 5: Constraint validation...")
     result = run_checker(
         schedule=assignments_to_dicts(refined_schedule),
         professors=professors,
@@ -308,71 +376,59 @@ def run_pipeline(source: str):
 
     if not result["passed"]:
         print("\n❌ Hard constraint violations found. Review before proceeding.")
-        print("   Violations:")
         for v in result["hard_violations"]:
             print(f"   - {v}")
-        # Pipeline continues — GA/SA should have minimized these,
-        # but manual review flag is raised per system design.
 
-    # ── STEP 5: 2nd CSP Run → Irregulars ──────────────────────
+    # ── STEP 6: 2nd CSP Run → Irregulars ──────────────────────
     final_schedule = list(refined_schedule)
 
-    if backlog_courses:
-        print(f"\n🔄 Step 5: 2nd CSP run for {len(backlog_courses)} backlog course(s)...")
-        irregular_schedule = build_initial_schedule(
-            courses=backlog_courses,
-            professors=professors,
-            rooms=rooms,
-            time_slots=time_slots,
-            existing_schedule=assignments_to_dicts(refined_schedule),  # treated as constraints
-            students=irregular_students,
-        )
-        irregular_check = run_checker(
-            schedule=assignments_to_dicts(irregular_schedule),
-            professors=professors,
-            students=irregular_students,
-            power_outage_schedule=power_outage,
-            verbose=False,
-        )
-        print(
-            f"   [Irregular draft] hard={len(irregular_check['hard_violations'])} | "
-            f"soft={len(irregular_check['soft_warnings'])}"
-        )
+    if irregular_students:
+        backlog_expanded = expand_backlog_courses(courses, irregular_students)
+        if backlog_expanded:
+            print(f"\n🔄 Step 6: 2nd CSP run for {len(backlog_expanded)} backlog slot(s)...")
+            irregular_schedule = build_initial_schedule(
+                courses=backlog_expanded,
+                professors=professors,
+                rooms=rooms,
+                time_slots=time_slots,
+                existing_schedule=assignments_to_dicts(refined_schedule),
+                students=irregular_students,
+            )
+            irregular_check = run_checker(
+                schedule=assignments_to_dicts(irregular_schedule),
+                professors=professors,
+                students=irregular_students,
+                power_outage_schedule=power_outage,
+                verbose=False,
+            )
+            print(
+                f"   [Irregular draft] hard={len(irregular_check['hard_violations'])} | "
+                f"soft={len(irregular_check['soft_warnings'])}"
+            )
 
-        # Refine irregular schedule too
-        irr_domains = build_csp(
-            backlog_courses,
-            professors,
-            rooms,
-            time_slots,
-            existing_schedule=assignments_to_dicts(refined_schedule),
-            students=irregular_students,
-        )
-
-        refined_irregular = refine_schedule(
-            base_schedule=irregular_schedule,
-            domains=irr_domains,
-            professors=professors,
-            students=irregular_students,
-            power_outage_schedule=power_outage,
-        )
-        final_schedule.extend(refined_irregular)
-        irregular_final_check = run_checker(
-            schedule=assignments_to_dicts(final_schedule),
-            professors=professors,
-            students=students,
-            power_outage_schedule=power_outage,
-            verbose=False,
-        )
-        print(
-            f"   [After irregular merge] hard={len(irregular_final_check['hard_violations'])} | "
-            f"soft={len(irregular_final_check['soft_warnings'])}"
-        )
+            irr_domains = build_csp(
+                backlog_expanded,
+                professors,
+                rooms,
+                time_slots,
+                existing_schedule=assignments_to_dicts(refined_schedule),
+                students=irregular_students,
+            )
+            refined_irregular = refine_schedule(
+                base_schedule=irregular_schedule,
+                domains=irr_domains,
+                professors=professors,
+                students=irregular_students,
+                power_outage_schedule=power_outage,
+            )
+            final_schedule.extend(refined_irregular)
+        else:
+            print("\n⏭️  Step 6: No backlog courses to schedule.")
     else:
-        print("\n⏭️  Step 5: No irregular backlog courses. Skipping 2nd CSP run.")
+        print("\n⏭️  Step 6: No irregular students. Skipping.")
 
-    # ── STEP 6: Final Constraint Check ────────────────────────
-    print("\n✅ Step 6: Final constraint validation...")
+    # ── STEP 7: Final Constraint Check ────────────────────────
+    print("\n✅ Step 7: Final constraint validation...")
     final_result = run_checker(
         schedule=assignments_to_dicts(final_schedule),
         professors=professors,
@@ -381,8 +437,8 @@ def run_pipeline(source: str):
         verbose=True,
     )
 
-    # ── STEP 7: Build + Display Master Lists ──────────────────
-    print("\n📋 Step 7: Building master lists...")
+    # ── STEP 8: Build + Display Master Lists ──────────────────
+    print("\n📋 Step 8: Building master lists...")
     master_lists = build_master_lists(assignments_to_dicts(final_schedule))
     print_master_lists(master_lists)
 
@@ -405,7 +461,7 @@ def run_pipeline(source: str):
     print(f"🏁 Pipeline complete. Status: {status}")
     print(f"   Total assignments     : {len(final_schedule)}")
     print(f"   Hard violations       : {len(final_result['hard_violations'])}")
-    print(f"   Soft suggestions       : {soft_suggestions}")
+    print(f"   Soft suggestions      : {soft_suggestions}")
     print(f"   Excel report          : {output_path}")
     print("=" * 60)
 

@@ -2,8 +2,39 @@
 # Extracts data from SQLite DB or Excel and returns data_struct objects.
 
 import sqlite3
+from copy import deepcopy
 import pandas as pd
 from data_struct import Professor, Course, Room, Block, Student, TimeSlot
+
+
+# ─────────────────────────────────────────
+# ROOM EXPANSION
+# Converts wing-level entries into specific room codes.
+# East Wing:  E401–E417  (17 rooms)
+# South Wing: S501–S514  (14 rooms)
+# Gymnasium / lab_room / others: kept as-is
+# ─────────────────────────────────────────
+
+def expand_rooms(rooms: list) -> list:
+    expanded = []
+    for room in rooms:
+        if room.location_code == "4th_east_wing":
+            for i in range(1, 18):          # E401 – E417
+                r = deepcopy(room)
+                r.location_code = f"E4{i:02d}"
+                r.location_map  = f"East Wing E4{i:02d}"
+                r.schedule      = {}
+                expanded.append(r)
+        elif room.location_code == "5th_south_wing":
+            for i in range(1, 15):          # S501 – S514
+                r = deepcopy(room)
+                r.location_code = f"S5{i:02d}"
+                r.location_map  = f"South Wing S5{i:02d}"
+                r.schedule      = {}
+                expanded.append(r)
+        else:
+            expanded.append(room)           # gymnasium, lab_room, etc.
+    return expanded
 
 
 # ─────────────────────────────────────────
@@ -69,7 +100,7 @@ def load_rooms_db(db_path: str) -> list[Room]:
             capacity       = int(row["capacity"]),
             available_days = row["available_days"].split(","),
         ))
-    return rooms
+    return expand_rooms(rooms)
 
 
 def load_blocks_db(db_path: str) -> list[Block]:
@@ -157,7 +188,7 @@ def load_rooms_excel(path: str) -> list[Room]:
             capacity       = int(row["capacity"]),
             available_days = str(row["available_days"]).split(","),
         ))
-    return rooms
+    return expand_rooms(rooms)
 
 
 def load_blocks_excel(path: str) -> list[Block]:

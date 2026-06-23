@@ -41,6 +41,7 @@ class Course:
     units: int
     college_name: str
     hour_allocation: int                # total hours per week
+    block: str = ""                     # block_code when expanded per-block, e.g. "1-A"
 
 
 # ─────────────────────────────────────────
@@ -49,7 +50,7 @@ class Course:
 
 @dataclass
 class Room:
-    location_code: str                  # e.g. '4th_east_wing', '5th_south_wing', 'gymnasium'
+    location_code: str                  # e.g. 'E401', 'S501', 'gymnasium'
     location_map: str                   # human-readable label
     capacity: int
     available_days: List[str]
