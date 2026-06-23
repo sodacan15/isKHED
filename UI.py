@@ -552,62 +552,7 @@ with tab3:
 
     if st.session_state.schedule_generated and (uploaded_file is not None or st.session_state.imported_schedule or os.path.exists(st.session_state.active_schedule_path)):
 
-        # --- REAL-TIME CONFLICT REPORT ---
-        try:
-            from csp_mcv import resolve_conflicts
 
-            df_conflicts_raw = pd.read_excel(
-                st.session_state.active_schedule_path, sheet_name="All_Assignments"
-            )
-
-            schedule_dicts = df_conflicts_raw.to_dict(orient="records")
-            for s in schedule_dicts:
-                for key in ("time_start", "time_end"):
-                    try:
-                        s[key] = int(s[key])
-                    except Exception:
-                        s[key] = 0
-                for key in ("is_lab", "is_nstp"):
-                    s[key] = bool(s.get(key, False))
-                if not s.get("block"):
-                    s["block"] = f"Year {s.get('year_level', '?')}"
-
-            report = resolve_conflicts(schedule_dicts)
-            total  = report["total"]
-
-            def _cid(slot):
-                return str(slot.get("course_id", "?")).split("__")[0]
-
-            def _sec(slot):
-                return str(slot.get("block", "?"))
-
-            def _day(slot):
-                return str(slot.get("day", "?"))
-
-            def _fmt_time(m):
-                try:
-                    h, mn = divmod(int(m), 60)
-                    p = "AM" if h < 12 else "PM"
-                    h = h % 12 or 12
-                    return f"{h}:{mn:02d} {p}"
-                except:
-                    return str(m)
-
-            def _time_range(slot):
-                return f"{_fmt_time(slot.get('time_start','?'))}–{_fmt_time(slot.get('time_end','?'))}"
-
-            # ── summary status card ───────────────────────────────────
-            st.markdown("### 📊 Schedule Status")
-            try:
-                df_summary = pd.read_excel(
-                    st.session_state.active_schedule_path, sheet_name="Summary"
-                )
-                if not df_summary.empty:
-                    row = df_summary.iloc[0]
-                    total_assign = int(row.get("total_assignments", 0))
-                    hard_count   = int(row.get("hard_violations",   total))
-                    soft_count   = int(row.get("soft_suggestions",  0))
-                    status_val   = str(row.get("status", "UNKNOWN"))
 
                     status_color = "#3fb950" if status_val == "PASSED" else "#f85149"
                     status_icon  = "✅" if status_val == "PASSED" else "❌"
