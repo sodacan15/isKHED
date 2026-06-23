@@ -289,11 +289,14 @@ def build_csp(
                     continue
                 for slot in time_slots:
                     for room in rooms:
-                        # [NEW-5] Route lab vs lec to the right room type up-front
-                        # Uses helpers that recognise both original and expanded room codes.
+                        # Route lab vs lec to the right room type up-front.
+                        # Lab slots → must be a lab-capable room (S5xx / lab_room).
+                        # Lec-only slots → must NOT be a lab room (allows E4xx, gymnasium,
+                        #   AND the "online" pseudo-room so online courses aren't excluded).
+                        # Final mode/room pairing is enforced by valid_location() below.
                         if course.has_lab and not _is_lab_room(room.location_code):
                             continue
-                        if course.has_lec and not course.has_lab and not _is_lec_room(room.location_code):
+                        if course.has_lec and not course.has_lab and _is_lab_room(room.location_code):
                             continue
 
                         candidate = {
