@@ -587,8 +587,7 @@ with tab3:
     </div>
 </div>
 """, unsafe_allow_html=True)
-            except:
-                pass
+            
 
             # ── download button ───────────────────────────────────────
             import os as _os
