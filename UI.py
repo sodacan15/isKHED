@@ -543,58 +543,245 @@ with tab3:
                     s["block"] = f"Year {s.get('year_level', '?')}"
 
             report = resolve_conflicts(schedule_dicts)
-            total = report["total"]
+            total  = report["total"]
 
-            st.markdown("### 🔍 Conflict Analysis Report")
-            if total == 0:
-                st.success("✅ Zero hard constraint violations — the schedule is fully compliant!")
-            else:
-                st.error(f"⚠️ {total} total violation(s) detected across all constraint categories.")
+            # ── helpers ──────────────────────────────────────────────
+            def _cid(slot):
+                """Strip __block__lab/lec suffix → bare course id."""
+                return str(slot.get("course_id", "?")).split("__")[0]
+
+            def _sec(slot):
+                return str(slot.get("block", "?"))
+
+            def _day(slot):
+                return str(slot.get("day", "?"))
+
+            def _fmt_time(m):
+                try:
+                    h, mn = divmod(int(m), 60)
+                    p = "AM" if h < 12 else "PM"
+                    h = h % 12 or 12
+                    return f"{h}:{mn:02d} {p}"
+                except:
+                    return str(m)
+
+            def _time_range(slot):
+                return f"{_fmt_time(slot.get('time_start','?'))}–{_fmt_time(slot.get('time_end','?'))}"
+
+            # ── summary status card ───────────────────────────────────
+            st.markdown("### 📊 Schedule Status")
+            try:
+                df_summary = pd.read_excel(
+                    st.session_state.active_schedule_path, sheet_name="Summary"
+                )
+                if not df_summary.empty:
+                    row = df_summary.iloc[0]
+                    total_assign = int(row.get("total_assignments", 0))
+                    hard_count   = int(row.get("hard_violations",   total))
+                    soft_count   = int(row.get("soft_suggestions",  0))
+                    status_val   = str(row.get("status", "UNKNOWN"))
+
+                    status_color = "#3fb950" if status_val == "PASSED" else "#f85149"
+                    status_icon  = "✅" if status_val == "PASSED" else "❌"
+
+                    st.markdown(f"""
+<div style="
+    background:#161b22;
+    border:1px solid #30363d;
+    border-radius:12px;
+    padding:20px 28px;
+    margin-bottom:18px;
+    display:flex;
+    gap:40px;
+    align-items:center;
+    flex-wrap:wrap;
+">
+    <div style="flex:1;min-width:140px;text-align:center;">
+        <div style="font-size:32px;font-weight:900;color:#58a6ff;">{total_assign}</div>
+        <div style="font-size:13px;color:#8b949e;margin-top:4px;">Total Assignments</div>
+    </div>
+    <div style="flex:1;min-width:140px;text-align:center;">
+        <div style="font-size:32px;font-weight:900;color:#f85149;">{hard_count}</div>
+        <div style="font-size:13px;color:#8b949e;margin-top:4px;">Hard Violations</div>
+    </div>
+    <div style="flex:1;min-width:140px;text-align:center;">
+        <div style="font-size:32px;font-weight:900;color:#d29922;">{soft_count}</div>
+        <div style="font-size:13px;color:#8b949e;margin-top:4px;">Soft Suggestions</div>
+    </div>
+    <div style="flex:1;min-width:140px;text-align:center;">
+        <div style="font-size:28px;font-weight:900;color:{status_color};">{status_icon} {status_val}</div>
+        <div style="font-size:13px;color:#8b949e;margin-top:4px;">Overall Status</div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+            except:
+                pass
+
+            # ── download button ───────────────────────────────────────
+            import os as _os
+            sched_path = st.session_state.active_schedule_path
+            if _os.path.exists(sched_path):
+                with open(sched_path, "rb") as _f:
+                    st.download_button(
+                        label="⬇️ Download masterSchedule.xlsx",
+                        data=_f.read(),
+                        file_name="masterSchedule.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                    )
+
+            st.divider()
+
+            # ── hard violations table ─────────────────────────────────
+            st.markdown("### ❌ Hard Constraint Violations")
 
             CATEGORIES = [
-                ("professor_conflicts",   "👨‍🏫 Professor Double-Bookings"),
-                ("room_conflicts",        "🏫 Room Double-Bookings"),
-                ("modality_conflicts",    "🔄 Modality Mix Violations"),
-                ("block_overlaps",        "🎓 Block Overlap Conflicts"),
-                ("lab_mode_violations",   "🧪 Lab Mode Violations"),
-                ("time_bound_violations", "⏰ Time Bound Violations"),
-                ("location_violations",   "📍 Location Violations"),
-                ("sunday_violations",     "📅 Sunday Class Violations"),
+                ("professor_conflicts",   "👨‍🏫 Professor Double-Booking",  2),
+                ("room_conflicts",        "🏫 Room Double-Booking",         2),
+                ("modality_conflicts",    "🔄 Modality Mix",                2),
+                ("block_overlaps",        "🎓 Block Overlap",               2),
+                ("lab_mode_violations",   "🧪 Lab Not F2F",                 1),
+                ("time_bound_violations", "⏰ Outside Allowed Hours",        1),
+                ("location_violations",   "📍 Invalid Room",                 1),
+                ("sunday_violations",     "📅 Sunday Class",                 1),
             ]
 
-            col_a, col_b = st.columns(2)
-            for idx, (key, label) in enumerate(CATEGORIES):
-                items = report[key]
-                count = len(items)
-                target_col = col_a if idx % 2 == 0 else col_b
-                with target_col:
-                    if count == 0:
-                        st.success(f"{label}: ✅ None")
+            hard_rows = []
+            for key, label, arity in CATEGORIES:
+                for item in report[key]:
+                    if arity == 2:
+                        s1, s2, _ = item
+                        hard_rows.append({
+                            "Type":    label,
+                            "Course":  f"{_cid(s1)} & {_cid(s2)}",
+                            "Section": f"{_sec(s1)}",
+                            "Day":     _day(s1),
+                            "Time":    _time_range(s1),
+                            "Reason":  f"{label}: {_cid(s1)} [Sec {_sec(s1)}] and "
+                                       f"{_cid(s2)} [Sec {_sec(s2)}] overlap on {_day(s1)} "
+                                       f"at {_time_range(s1)}",
+                        })
                     else:
-                        with st.expander(f"{label} — ❌ {count} violation(s)", expanded=count > 0):
-                            for item in items:
-                                if len(item) == 3:
-                                    _, _, desc = item
-                                else:
-                                    _, desc = item
-                                st.markdown(f"- {desc}")
+                        s1, _ = item
+                        hard_rows.append({
+                            "Type":    label,
+                            "Course":  _cid(s1),
+                            "Section": _sec(s1),
+                            "Day":     _day(s1),
+                            "Time":    _time_range(s1),
+                            "Reason":  f"{label}: [{_cid(s1)}][Sec {_sec(s1)}] on "
+                                       f"{_day(s1)} at {_time_range(s1)}",
+                        })
+
+            if not hard_rows:
+                st.success("✅ No hard constraint violations — schedule is fully compliant.")
+            else:
+                st.error(f"⚠️ {len(hard_rows)} hard violation(s) found.")
+                df_hard = pd.DataFrame(hard_rows)[["Type","Course","Section","Day","Time","Reason"]]
+
+                # styled table
+                def _style_hard(row):
+                    color_map = {
+                        "👨‍🏫 Professor Double-Booking":  "#3d1a1a",
+                        "🏫 Room Double-Booking":         "#1a2d3d",
+                        "🔄 Modality Mix":                "#2d2a1a",
+                        "🎓 Block Overlap":               "#1a2d1a",
+                        "🧪 Lab Not F2F":                 "#2d1a2d",
+                        "⏰ Outside Allowed Hours":        "#1a1a2d",
+                        "📍 Invalid Room":                 "#2d2d1a",
+                        "📅 Sunday Class":                 "#2d1a1a",
+                    }
+                    bg = color_map.get(row["Type"], "#1a1a1a")
+                    return [f"background-color:{bg};color:#e6edf3"] * len(row)
+
+                st.dataframe(
+                    df_hard.style.apply(_style_hard, axis=1),
+                    use_container_width=True,
+                    hide_index=True,
+                    height=min(38 * len(hard_rows) + 38, 400),
+                )
 
             st.divider()
+
+            # ── soft suggestions table ────────────────────────────────
+            st.markdown("### ⚠️ Soft Constraint Suggestions")
+            try:
+                from constraint_check import check_soft_constraints
+                from database_access import load_professors_excel, load_students_excel
+
+                _profs    = load_professors_excel("inputSheet.xlsx")
+                _students = load_students_excel("inputSheet.xlsx")
+                _po_days  = []
+                try:
+                    from database_access import load_power_outage_excel
+                    _po_days = load_power_outage_excel("inputSheet.xlsx")
+                except:
+                    pass
+
+                soft_warnings = check_soft_constraints(
+                    schedule_dicts, _profs, _students, _po_days
+                )
+
+                if not soft_warnings:
+                    st.success("✅ No soft constraint suggestions.")
+                else:
+                    st.warning(f"ℹ️ {len(soft_warnings)} suggestion(s) to review.")
+
+                    # Parse the warning strings into structured rows
+                    import re
+                    soft_rows = []
+                    TAG_MAP = {
+                        "BREAK":         ("⏸️ Insufficient Break",      "Professor has back-to-back classes without adequate rest."),
+                        "MODALITY_GAP":  ("🔄 Modality Switch Gap",     "Less than 3-hour gap between F2F and online classes."),
+                        "PREFERENCE":    ("💬 Prof Preference Mismatch","Assigned mode doesn't match professor's preference."),
+                        "POWER_OUTAGE":  ("⚡ Power Outage Day",        "Class scheduled on a power outage day — consider relocation."),
+                        "IRREGULAR":     ("🎓 Irregular Adjacency",     "Retaken course may not be adjacent to year-level classes."),
+                        "NO_CLASS_DAYS": ("📅 Too Many Class Days",     "Block has more than 4 scheduled weekdays."),
+                    }
+                    for w in soft_warnings:
+                        tag  = re.search(r"\[([A-Z_]+)\]", w)
+                        tag  = tag.group(1) if tag else "OTHER"
+                        type_label, reason_base = TAG_MAP.get(tag, (f"ℹ️ {tag}", w))
+
+                        # Try to pull course/section from the warning string
+                        course_match  = re.search(r"course\s+([\w_]+)", w, re.I)
+                        section_match = re.search(r"[Bb]lock\s+([\w\-]+)", w)
+                        prof_match    = re.search(r"Prof\s+([\w_]+)", w)
+
+                        course_str  = course_match.group(1)  if course_match  else "—"
+                        section_str = section_match.group(1) if section_match else "—"
+                        who_str     = prof_match.group(1)    if prof_match    else "—"
+
+                        # Clean readable reason
+                        readable = w
+                        for old_tag in TAG_MAP:
+                            readable = readable.replace(f"[{old_tag}]", "").strip()
+
+                        soft_rows.append({
+                            "Type":        type_label,
+                            "Course":      course_str,
+                            "Section":     section_str,
+                            "Involves":    who_str,
+                            "Suggestion":  reason_base,
+                            "Detail":      readable,
+                        })
+
+                    df_soft = pd.DataFrame(soft_rows)[
+                        ["Type","Course","Section","Involves","Suggestion","Detail"]
+                    ]
+                    st.dataframe(
+                        df_soft,
+                        use_container_width=True,
+                        hide_index=True,
+                        height=min(38 * len(soft_rows) + 38, 400),
+                    )
+            except Exception as soft_err:
+                st.info(f"Soft constraint check not available: {soft_err}")
+
+            st.divider()
+
         except Exception as conflict_err:
             st.info(f"Conflict analysis not available: {conflict_err}")
-
-        # --- ALGORITHM STATUS SUMMARY METRICS ---
-        try:
-            df_summary = pd.read_excel(st.session_state.active_schedule_path, sheet_name="Summary")
-            st.markdown("### 📊 Algorithm Status Report")
-            
-            if not df_summary.empty:
-                metric_cols = st.columns(len(df_summary.columns))
-                for i, col in enumerate(df_summary.columns):
-                    metric_cols[i].metric(label=col.replace("_", " ").title(), value=str(df_summary.iloc[0][col]))
-            st.divider()
-        except:
-            st.info("No Summary sheet found in the generated output.")
 
         # --- INTERACTIVE MANUAL EDITOR ---
         try:
