@@ -394,7 +394,69 @@ with tab3:
     st.subheader("System Health & Manual Overrides")
     
     if st.session_state.schedule_generated and (uploaded_file is not None or st.session_state.imported_schedule):
-        
+
+        # --- REAL-TIME CONFLICT REPORT ---
+        try:
+            from csp_mcv import resolve_conflicts
+
+            df_conflicts_raw = pd.read_excel(
+                st.session_state.active_schedule_path, sheet_name="All_Assignments"
+            )
+
+            # Build plain dicts with correct types expected by resolve_conflicts()
+            schedule_dicts = df_conflicts_raw.to_dict(orient="records")
+            for s in schedule_dicts:
+                for key in ("time_start", "time_end"):
+                    try:
+                        s[key] = int(s[key])
+                    except Exception:
+                        s[key] = 0
+                for key in ("is_lab", "is_nstp"):
+                    s[key] = bool(s.get(key, False))
+                if not s.get("block"):
+                    s["block"] = f"Year {s.get('year_level', '?')}"
+
+            report = resolve_conflicts(schedule_dicts)
+            total = report["total"]
+
+            st.markdown("### 🔍 Conflict Analysis Report")
+            if total == 0:
+                st.success("✅ Zero hard constraint violations — the schedule is fully compliant!")
+            else:
+                st.error(f"⚠️ {total} total violation(s) detected across all constraint categories.")
+
+            CATEGORIES = [
+                ("professor_conflicts",   "👨‍🏫 Professor Double-Bookings"),
+                ("room_conflicts",        "🏫 Room Double-Bookings"),
+                ("modality_conflicts",    "🔄 Modality Mix Violations"),
+                ("block_overlaps",        "🎓 Block Overlap Conflicts"),
+                ("lab_mode_violations",   "🧪 Lab Mode Violations"),
+                ("time_bound_violations", "⏰ Time Bound Violations"),
+                ("location_violations",   "📍 Location Violations"),
+                ("sunday_violations",     "📅 Sunday Class Violations"),
+            ]
+
+            col_a, col_b = st.columns(2)
+            for idx, (key, label) in enumerate(CATEGORIES):
+                items = report[key]
+                count = len(items)
+                target_col = col_a if idx % 2 == 0 else col_b
+                with target_col:
+                    if count == 0:
+                        st.success(f"{label}: ✅ None")
+                    else:
+                        with st.expander(f"{label} — ❌ {count} violation(s)", expanded=count > 0):
+                            for item in items:
+                                if len(item) == 3:
+                                    _, _, desc = item
+                                else:
+                                    _, desc = item
+                                st.markdown(f"- {desc}")
+
+            st.divider()
+        except Exception as conflict_err:
+            st.info(f"Conflict analysis not available: {conflict_err}")
+
         # --- ALGORITHM STATUS SUMMARY METRICS ---
         try:
             df_summary = pd.read_excel(st.session_state.active_schedule_path, sheet_name="Summary")
