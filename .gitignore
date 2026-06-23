@@ -12,3 +12,4 @@ venv/
 *.sqlite
 *.db
 masterSchedule.xlsx
+pandas
