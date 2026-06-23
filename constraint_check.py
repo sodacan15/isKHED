@@ -5,14 +5,19 @@
 from data_struct import Assignment, Professor, Student
 from csp_mcv import (
     base_course_id,
+    is_lab_component,
+    get_lab_lec_partner,
+    lab_lec_are_adjacent,
     no_modality_mix,
     no_double_booking_professor,
     no_double_booking_room,
+    no_student_block_overlap,
     lab_must_be_f2f,
     valid_time_bounds,
     valid_location,
     no_class_sunday,
     time_overlaps,
+    three_no_class_days,
 )
 
 
@@ -102,6 +107,7 @@ def compute_fitness(
             if not no_double_booking_professor(schedule[i], schedule[j]): total += 1000
             if not no_double_booking_room(schedule[i], schedule[j]):      total += 1000
             if not no_modality_mix(schedule[i], schedule[j]):             total += 500
+            if not no_student_block_overlap(schedule[i], schedule[j]):    total += 1000
 
     for prof in professors:
         prof_slots = [s for s in schedule if s["prof_id"] == prof.prof_id]
@@ -134,8 +140,6 @@ def check_lab_lec_pairs(schedule: list[dict]) -> list[str]:
       1. On the same day.
       2. Back-to-back (gap ≤ 30 min).
     """
-    from csp_mcv import get_lab_lec_partner, is_lab_component, lab_lec_are_adjacent
-
     violations = []
     checked_pairs = set()
 
@@ -207,6 +211,11 @@ def check_hard_constraints(schedule: list[dict]) -> list[str]:
                     f"[MODALITY_MIX] {d1} and {d2} "
                     f"mix modality without 3-hour gap on {s1['day']}."
                 )
+            if not no_student_block_overlap(s1, s2):
+                violations.append(
+                    f"[BLOCK_OVERLAP] Block {s1.get('block','?')} has overlapping classes: "
+                    f"{d1} and {d2} on {s1['day']}."
+                )
 
     # Lab+lecture co-scheduling check
     violations.extend(check_lab_lec_pairs(schedule))
@@ -253,6 +262,15 @@ def check_soft_constraints(
                         f"{base_course_id(slot['course_id'])} "
                         f"may not be adjacent to year-level courses."
                     )
+
+    # Soft: each block should have ≤ 4 class days (≥ 3 no-class days inc. Sunday)
+    all_blocks = {s.get("block") for s in schedule if s.get("block")}
+    for block in all_blocks:
+        if not three_no_class_days(schedule, block):
+            warnings.append(
+                f"[NO_CLASS_DAYS] Block {block} is scheduled on more than 4 weekdays "
+                f"(should have at least 3 no-class days including Sunday)."
+            )
 
     return warnings
 

@@ -99,52 +99,29 @@ def valid_time_bounds(slot: dict) -> bool:
 
 
 # [FIX-1] + [FIX-3] valid_location now covers all modes and includes lab_room.
-# Base room type sets (pre-expansion codes from the Excel/DB input)
 _F2F_ROOMS    = {"4th_east_wing", "5th_south_wing", "gymnasium", "lab_room"}
 _LAB_ROOMS    = {"lab_room", "5th_south_wing"}   # labs must be in these rooms
 _LEC_ROOMS    = {"4th_east_wing", "gymnasium"}    # lec/GEED/PATHFIT rooms
 _ONLINE_ROOMS = {"online"}                         # online classes have no physical room
 
 
-def _is_f2f_room(room: str) -> bool:
-    """
-    True for any physical F2F room, including expanded codes.
-    database_access.expand_rooms() maps:
-      4th_east_wing → E401–E417
-      5th_south_wing → S501–S514
-    So we accept both the original codes and the expanded prefixes.
-    """
-    return (room in _F2F_ROOMS
-            or room.startswith("E4")
-            or room.startswith("S5"))
-
-
-def _is_lab_room(room: str) -> bool:
-    """True for rooms that can host lab sessions (South Wing / lab_room)."""
-    return room in _LAB_ROOMS or room.startswith("S5")
-
-
-def _is_lec_room(room: str) -> bool:
-    """True for rooms that host lecture-only sessions (East Wing / gymnasium)."""
-    return room in _LEC_ROOMS or room.startswith("E4")
-
-
 def valid_location(slot: dict) -> bool:
     """
-    Location must be a valid F2F room for face-to-face courses, or 'online'
-    for online courses. Lab slots must use a lab-capable room.
+    Location must be 4th East Wing, 5th South Wing, Gymnasium, or Lab Room for F2F.
+    Online classes must be assigned the virtual room code 'online'.
+    Lab slots must use a lab-capable room (5th South Wing or lab_room).
     (CCIS observed scheduling practice + CHED, 2022)
 
     [FIX-1] Previous version silently allowed any room for online courses.
-    [FIX-3] lab_room and expanded room codes (E4xx, S5xx) now pass validation.
+    [FIX-3] lab_room added so richer dataset rooms pass validation.
     """
     mode = slot["mode"]
     room = slot["room"]
     if mode == "f2f":
-        if not _is_f2f_room(room):
+        if room not in _F2F_ROOMS:
             return False
         # Lab slots must be in a lab-capable room
-        if slot.get("is_lab") and not _is_lab_room(room):
+        if slot.get("is_lab") and room not in _LAB_ROOMS:
             return False
         return True
     elif mode == "online":
@@ -290,10 +267,9 @@ def build_csp(
                 for slot in time_slots:
                     for room in rooms:
                         # [NEW-5] Route lab vs lec to the right room type up-front
-                        # Uses helpers that recognise both original and expanded room codes.
-                        if course.has_lab and not _is_lab_room(room.location_code):
+                        if course.has_lab and room.location_code not in _LAB_ROOMS:
                             continue
-                        if course.has_lec and not course.has_lab and not _is_lec_room(room.location_code):
+                        if course.has_lec and not course.has_lab and room.location_code in _LAB_ROOMS:
                             continue
 
                         candidate = {
@@ -488,58 +464,6 @@ def greedy_mcv(
         return None  # all candidates exhausted — backtrack
 
     return backtrack(remaining_domains, assigned)
-
-
-# ─────────────────────────────────────────
-# COURSE ID HELPERS
-# Used by constraint_check.py, main.py, and the UI.
-# ─────────────────────────────────────────
-
-def base_course_id(composite: str) -> str:
-    """
-    Strip block / lab / lec / irr suffix from a composite course_id.
-    Examples:
-      'CS101__1-A__lab' → 'CS101'
-      'CS101__1-A__lec' → 'CS101'
-      'CS101__1-A__irr' → 'CS101'
-      'CS101__1-A'      → 'CS101'
-      'CS101'           → 'CS101'
-    """
-    return composite.split("__")[0]
-
-
-def is_lab_component(course_id: str) -> bool:
-    """True when the composite course_id represents the lab half of a lab+lec pair."""
-    return course_id.endswith("__lab")
-
-
-def get_lab_lec_partner(course_id: str) -> str | None:
-    """
-    Given a lab or lec composite course_id, return the partner component's id.
-      'CS101__1-A__lab' → 'CS101__1-A__lec'
-      'CS101__1-A__lec' → 'CS101__1-A__lab'
-    Returns None if the course_id is not a lab/lec split component.
-    """
-    if course_id.endswith("__lab"):
-        return course_id[:-5] + "__lec"
-    if course_id.endswith("__lec"):
-        return course_id[:-5] + "__lab"
-    return None
-
-
-def lab_lec_are_adjacent(lab_slot: dict, lec_slot: dict, max_gap: int = 30) -> bool:
-    """
-    True when the lab and lec components of a course are on the same day and the
-    gap between them is at most max_gap minutes (default 30).
-    """
-    if lab_slot["day"] != lec_slot["day"]:
-        return False
-    # One ends before the other starts
-    if lab_slot["time_end"] <= lec_slot["time_start"]:
-        return lec_slot["time_start"] - lab_slot["time_end"] <= max_gap
-    if lec_slot["time_end"] <= lab_slot["time_start"]:
-        return lab_slot["time_start"] - lec_slot["time_end"] <= max_gap
-    return True  # overlapping → counts as adjacent
 
 
 # ─────────────────────────────────────────
