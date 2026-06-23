@@ -355,7 +355,7 @@ with tab1:
         st.info("📂 Viewing an imported master schedule. Use '🔁 Re-run from Imported Schedule' to re-run the algorithm with these constraints.")
 
     # Display logic (runs if schedule exists in memory)
-    if st.session_state.schedule_generated and (uploaded_file is not None or st.session_state.imported_schedule):
+    if st.session_state.schedule_generated and (uploaded_file is not None or st.session_state.imported_schedule or _do_generate):
         try:
             df_raw = pd.read_excel(st.session_state.active_schedule_path, sheet_name="All_Assignments")
 
@@ -460,7 +460,7 @@ with tab1:
         except Exception as e:
             st.warning(f"Could not load master schedule. Error: {e}")
 
-    elif not run_algorithms and not rerun_from_master:
+    elif not run_algorithms and not rerun_from_master and not st.session_state.schedule_generated:
         st.info("Upload the input file and click 'Generate Schedule' to view the timetable.")
 
 
@@ -470,7 +470,7 @@ with tab1:
 with tab2:
     st.subheader("Room Occupancy Matrix")
 
-    if st.session_state.schedule_generated and (uploaded_file is not None or st.session_state.imported_schedule):
+    if st.session_state.schedule_generated and (uploaded_file is not None or st.session_state.imported_schedule or os.path.exists(st.session_state.active_schedule_path)):
         try:
             df_raw_rooms = pd.read_excel(st.session_state.active_schedule_path, sheet_name="All_Assignments")
 
@@ -550,7 +550,7 @@ with tab2:
 with tab3:
     st.subheader("System Health & Manual Overrides")
 
-    if st.session_state.schedule_generated and (uploaded_file is not None or st.session_state.imported_schedule):
+    if st.session_state.schedule_generated and (uploaded_file is not None or st.session_state.imported_schedule or os.path.exists(st.session_state.active_schedule_path)):
 
         # --- REAL-TIME CONFLICT REPORT ---
         try:
