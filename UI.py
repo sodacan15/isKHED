@@ -135,6 +135,10 @@ if imported_file is not None:
     st.session_state.schedule_generated = True
     st.sidebar.success("Schedule loaded successfully.")
 
+st.sidebar.divider()
+st.sidebar.markdown("**🔁 Re-run from Imported Schedule**")
+rerun_from_master = st.sidebar.button("🔁 Re-run from Imported Schedule", use_container_width=True)
+
 # Pipeline stage labels for the progress bar
 PIPELINE_STAGES = [
     (0.05, "Loading data..."),
@@ -159,8 +163,21 @@ with tab1:
     st.subheader("Firm Master Schedules")
     
     # Check if user clicked Generate
-    if run_algorithms:
-        if uploaded_file is not None:
+    if rerun_from_master:
+    if st.session_state.imported_schedule:
+        from migrate_master_to_input import migrate
+        with st.spinner("Preparing inputSheet from imported schedule..."):
+            migrate(st.session_state.active_schedule_path, "inputSheet.xlsx")
+        st.session_state.active_schedule_path = "masterSchedule.xlsx"
+        st.session_state.imported_schedule = False
+        _do_generate = True
+    else:
+        st.warning("Import a masterSchedule.xlsx first.")
+        _do_generate = False
+else:
+    _do_generate = False
+    if run_algorithms or _do_generate:
+        if uploaded_file is not None and not _do_generate:
             with open("inputSheet.xlsx", "wb") as f:
                 f.write(uploaded_file.getbuffer())
             st.session_state.active_schedule_path = "masterSchedule.xlsx"
