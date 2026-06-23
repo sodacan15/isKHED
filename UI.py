@@ -191,7 +191,18 @@ if st.sidebar.button("⚠️ Manual Adjustments", use_container_width=True):
     st.session_state.active_tab = "Manual Adjustments"
 
 if st.session_state.schedule_generated:
-    st.sidebar.markdown("<br><br>", unsafe_allow_html=True)
+    st.sidebar.markdown("<br>", unsafe_allow_html=True)
+    master_path = "masterSchedule.xlsx"
+    if os.path.exists(master_path):
+        with open(master_path, "rb") as _f_sidebar:
+            st.sidebar.download_button(
+                "⬇️ Export Master Schedule (.xlsx)",
+                _f_sidebar,
+                "masterSchedule.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+    st.sidebar.markdown("<br>", unsafe_allow_html=True)
     if st.sidebar.button("🗑️ Delete Generation", use_container_width=True):
         st.session_state.schedule_generated = False
         st.rerun()
