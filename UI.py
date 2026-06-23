@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import subprocess
-import threading
 import time
 import os
 import sys
@@ -178,37 +177,142 @@ with tab1:
                     st.session_state.schedule_generated = False
                     st.stop()
 
+            # ── LIVE TERMINAL ──────────────────────────────────────
+            st.markdown("**🖥️ Live Algorithm Output**")
+            st.markdown("""
+<style>
+.term-box {
+    background:#0d1117;
+    color:#c9d1d9;
+    font-family:'Courier New',Courier,monospace;
+    font-size:13px;
+    padding:16px;
+    border-radius:10px;
+    height:340px;
+    overflow-y:auto;
+    border:1px solid #30363d;
+    white-space:pre-wrap;
+    word-break:break-all;
+    line-height:1.6;
+}
+/* colour specific keywords */
+.term-box .ok   { color:#3fb950; }
+.term-box .warn { color:#d29922; }
+.term-box .err  { color:#f85149; }
+.term-box .info { color:#58a6ff; }
+.term-box .ga   { color:#bc8cff; }
+.term-box .sa   { color:#79c0ff; }
+</style>
+""", unsafe_allow_html=True)
+
+            terminal_placeholder = st.empty()
+
+            def colorize(line):
+                """Wrap keywords in coloured spans for the terminal box."""
+                import html as _html
+                safe = _html.escape(line)
+                rules = [
+                    ("✅",          "ok"),
+                    ("❌",          "err"),
+                    ("⚠️",          "warn"),
+                    ("📂",          "info"),
+                    ("🔀",          "info"),
+                    ("🔍",          "info"),
+                    ("🔄",          "info"),
+                    ("📋",          "info"),
+                    ("[GA]",        "ga"),
+                    ("[SA]",        "sa"),
+                    ("Generation",  "ga"),
+                    ("Temp:",       "sa"),
+                    ("fitness",     "sa"),
+                    ("hard=",       "warn"),
+                    ("soft=",       "info"),
+                    ("violation",   "err"),
+                    ("passed",      "ok"),
+                    ("PASSED",      "ok"),
+                    ("FAILED",      "err"),
+                ]
+                for token, cls in rules:
+                    if token in safe:
+                        safe = safe.replace(token, f'<span class="{cls}">{token}</span>', 1)
+                        break
+                return safe
+
+            def render_terminal(lines):
+                body = "<br>".join(colorize(l) for l in lines)
+                # auto-scroll trick: empty anchor at the bottom
+                terminal_placeholder.markdown(
+                    f'<div class="term-box">{body}<a id="term-end"></a></div>'
+                    '<script>document.getElementById("term-end")?.scrollIntoView();</script>',
+                    unsafe_allow_html=True,
+                )
+
+            # Stream main.py output line by line via Popen
+            log_lines = ["$ python main.py", "─" * 48]
+            render_terminal(log_lines)
+
             result_holder = {"done": False, "error": None}
-            def run_main():
-                try:
-                    proc = subprocess.run([sys.executable, "main.py"], capture_output=True, text=True)
-                    if proc.returncode != 0:
-                        result_holder["error"] = proc.stderr or "Unknown error from main.py"
-                except Exception as exc:
-                    result_holder["error"] = str(exc)
-                finally:
-                    result_holder["done"] = True
+            proc = subprocess.Popen(
+                [sys.executable, "-u", "main.py"],   # -u = unbuffered stdout
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,             # merge stderr into stdout
+                text=True,
+                bufsize=1,                            # line-buffered
+            )
 
-            thread = threading.Thread(target=run_main, daemon=True)
-            thread.start()
+            stage_idx   = 0
+            last_update = time.time()
 
-            stage_idx = 0
-            while not result_holder["done"]:
-                if stage_idx < len(PIPELINE_STAGES):
-                    pct, label = PIPELINE_STAGES[stage_idx]
-                    progress_bar.progress(pct)
-                    progress_label.markdown(f"⏳ {label}")
-                    stage_idx += 1
-                time.sleep(2.5)
-            thread.join()
+            STAGE_KEYWORDS = [
+                ("Loading data",          0.05, "Loading data..."),
+                ("CSP domain",            0.20, "CSP — building valid domains..."),
+                ("MCV",                   0.35, "MCV — drafting initial schedule..."),
+                ("Genetic Algorithm",     0.55, "GA — evolving populations..."),
+                ("Simulated Annealing",   0.80, "SA — fine-tuning soft constraints..."),
+                ("2nd CSP",               0.90, "Scheduling irregular students..."),
+                ("master lists",          0.95, "Saving master schedule..."),
+            ]
+            stage_ptr = 0
+
+            for raw_line in proc.stdout:
+                line = raw_line.rstrip()
+                if not line:
+                    continue
+
+                log_lines.append(line)
+                # Keep last 120 lines so the box doesn't get enormous
+                if len(log_lines) > 120:
+                    log_lines = log_lines[-120:]
+
+                # Advance progress bar based on keywords in output
+                for kw, pct, label in STAGE_KEYWORDS[stage_ptr:]:
+                    if kw.lower() in line.lower():
+                        progress_bar.progress(pct)
+                        progress_label.markdown(f"⏳ {label}")
+                        stage_ptr = STAGE_KEYWORDS.index((kw, pct, label)) + 1
+                        break
+
+                # Throttle DOM updates to ~4 per second to avoid hammering Streamlit
+                if time.time() - last_update > 0.25:
+                    render_terminal(log_lines)
+                    last_update = time.time()
+
+            proc.wait()
+            render_terminal(log_lines)   # final flush
 
             progress_bar.progress(1.0)
             progress_label.empty()
 
-            if result_holder["error"]:
-                st.error(f"Pipeline error: {result_holder['error']}")
+            if proc.returncode != 0:
+                log_lines.append("─" * 48)
+                log_lines.append("❌ Process exited with errors (see above).")
+                render_terminal(log_lines)
+                st.error("Pipeline error — check the terminal output above.")
                 st.session_state.schedule_generated = False
             else:
+                log_lines.append("─" * 48)
+                log_lines.append("✅ Schedule generation complete.")
+                render_terminal(log_lines)
                 st.session_state.schedule_generated = True
                 st.success("✨ Schedule finalized successfully!")
         else:
