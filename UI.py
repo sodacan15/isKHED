@@ -4,6 +4,7 @@ import subprocess
 import threading
 import time
 import os
+import sys
 
 # ==========================================
 # PAGE CONFIGURATION
@@ -180,7 +181,7 @@ with tab1:
             result_holder = {"done": False, "error": None}
             def run_main():
                 try:
-                    proc = subprocess.run(["python", "main.py"], capture_output=True, text=True)
+                    proc = subprocess.run([sys.executable, "main.py"], capture_output=True, text=True)
                     if proc.returncode != 0:
                         result_holder["error"] = proc.stderr or "Unknown error from main.py"
                 except Exception as exc:
