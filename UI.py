@@ -406,7 +406,7 @@ if run_algorithms:
         with st.spinner("Running the Algorithm... Please wait."):
             with open("inputSheet.xlsx", "wb") as f:
                 f.write(uploaded_file.getbuffer())
-            subprocess.run(["python", "main.py"])
+            subprocess.run([sys.executable, "main.py"])
             st.session_state.schedule_generated = True
             st.session_state.edit_idx = None
         st.success("✨ Schedule finalized successfully!")
